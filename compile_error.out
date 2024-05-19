@@ -1,0 +1,74 @@
+scons: Reading SConscript files ...
+Mkdir("/home/chenrc/rtcahce_24.5.14/build/X86/gem5.build")
+Checking for linker -Wl,--as-needed support... (cached) yes
+Checking for compiler -gz support... (cached) yes
+Checking for linker -gz support... (cached) yes
+Info: Using Python config: python3-config
+Checking for C header file Python.h... (cached) yes
+Checking Python version... (cached) 3.11.5
+Checking for accept(0,0,0) in C++ library None... (cached) yes
+Checking for zlibVersion() in C++ library z... (cached) yes
+Checking for C library tcmalloc_minimal... (cached) yes
+Building in /home/chenrc/rtcahce_24.5.14/build/X86
+Using saved variables file(s) /home/chenrc/rtcahce_24.5.14/build/X86/gem5.build/variables
+Checking for backtrace_symbols_fd((void *)1, 0, 0) in C library None... (cached) yes
+Checking size of struct kvm_xsave ... (cached) yes
+Checking for C header file linux/kvm.h... (cached) yes
+Checking for timer_create(CLOCK_MONOTONIC, NULL, NULL) in C library None... (cached) no
+Checking for timer_create(CLOCK_MONOTONIC, NULL, NULL) in C library rt... (cached) yes
+Checking for member exclude_host in struct perf_event_attr...(cached) yes
+Checking for C header file fenv.h... (cached) yes
+Checking for C header file png.h... (cached) no
+Warning: Header file <png.h> not found.
+         This host has no libpng library.
+         Disabling support for PNG framebuffers.
+Checking for clock_nanosleep(0,0,NULL,NULL) in C library None... (cached) yes
+Checking for C header file valgrind/valgrind.h... (cached) no
+Checking for pkg-config package hdf5-serial... (cached) no
+Checking for pkg-config package hdf5... (cached) no
+Checking for H5Fcreate("", 0, 0, 0) in C library hdf5... (cached) no
+Warning: Couldn't find HDF5 C++ libraries. Disabling HDF5 support.
+Checking for shm_open("/test", 0, 0) in C library None... (cached) yes
+Checking for pkg-config package protobuf... (cached) yes
+Checking for GOOGLE_PROTOBUF_VERIFY_VERSION in C++ library protobuf... (cached) yes
+Checking for C header file linux/if_tun.h... (cached) yes
+Checking whether __i386__ is declared... (cached) no
+Checking whether __x86_64__ is declared... (cached) yes
+Checking for compiler -Wno-self-assign-overloaded support... (cached) yes
+Checking for linker -Wno-free-nonheap-object support... (cached) yes
+scons: done reading SConscript files.
+scons: Building targets ...
+ [VER TAGS]  -> X86/sim/tags.cc
+ [     CXX] src/mem/remappingtable.cc -> X86/mem/remappingtable.o
+src/mem/remappingtable.cc: In member function ‘bool gem5::memory::RemappingTable::handleBusReq(gem5::PacketPtr)’:
+src/mem/remappingtable.cc:164:27: warning: comparison of unsigned expression in ‘>= 0’ is always true [-Wtype-limits]
+  164 |         if(pkt->remapaddr >=0 /* MaxNVMPage * PageSize */){ //by crc 240515
+      |            ~~~~~~~~~~~~~~~^~~
+src/mem/remappingtable.cc: In member function ‘bool gem5::memory::RemappingTable::handleblockedqueue(gem5::PacketPtr)’:
+src/mem/remappingtable.cc:514:23: warning: comparison of unsigned expression in ‘>= 0’ is always true [-Wtype-limits]
+  514 |     if(pkt->remapaddr >=0/*  MaxNVMPage * PageSize */){
+      |        ~~~~~~~~~~~~~~~^~~
+src/mem/remappingtable.cc: In constructor ‘gem5::memory::RemappingTable::BusSidePort::BusSidePort(const std::string&, gem5::memory::RemappingTable&)’:
+src/mem/remappingtable.cc:641:20: warning: ‘gem5::ResponsePort::ResponsePort(const std::string&, gem5::SimObject*, gem5::PortID)’ is deprecated: ResponsePort ownership is deprecated. Owner should now be registered in derived classes. [-Wdeprecated-declarations]
+  641 |       blocked(false)
+      |                    ^
+In file included from src/mem/remappingtable.hh:11,
+                 from src/mem/remappingtable.cc:8:
+src/mem/port.hh:347:5: note: declared here
+  347 |     ResponsePort(const std::string& name, SimObject* _owner,
+      |     ^~~~~~~~~~~~
+src/mem/remappingtable.cc: In constructor ‘gem5::memory::RemappingTable::DpSidePort::DpSidePort(const std::string&, gem5::memory::RemappingTable&)’:
+src/mem/remappingtable.cc:846:20: warning: ‘gem5::RequestPort::RequestPort(const std::string&, gem5::SimObject*, gem5::PortID)’ is deprecated: RequestPort ownership is deprecated. Owner should now be registered in derived classes. [-Wdeprecated-declarations]
+  846 |       blocked(false)
+      |                    ^
+src/mem/port.hh:132:5: note: declared here
+  132 |     RequestPort(const std::string& name, SimObject* _owner,
+      |     ^~~~~~~~~~~
+ [     CXX] src/base/date.cc -> X86/base/date.o
+ [    LINK]  -> X86/gem5.opt
+scons: done building targets.
+*** Summary of Warnings ***
+Warning: Header file <png.h> not found.
+         This host has no libpng library.
+         Disabling support for PNG framebuffers.
+Warning: Couldn't find HDF5 C++ libraries. Disabling HDF5 support.

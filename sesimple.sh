@@ -1,0 +1,1 @@
+build/X86/gem5.opt -d simplese  --debug-flags=Simple_Dispatcher,MemoryAccess,MMU configs/example/flatsimplese.py --cmd="/home/chenrc/rtcahce_24.5.14/tests/test-progs/hello/bin/x86/linux/hello"  --cpu-type=X86O3CPU --l1d_size=64kB --l1i_size=16kB --l2_size=256kB  --caches --l2cache --maxinsts=1000000000 --flat-mem true > run.out 2>&1

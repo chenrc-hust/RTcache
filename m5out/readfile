@@ -1,0 +1,1 @@
+m5 exit; echo 'This is running in o3';sleep 1; m5 exit

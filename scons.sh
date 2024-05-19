@@ -1,0 +1,1 @@
+scons build/X86/gem5.opt -j$(nproc) > compile_error.out 2>&1
