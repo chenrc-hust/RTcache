@@ -15,21 +15,17 @@ namespace memory
 
 Dispatcher::Dispatcher(const DispatcherParams& params)
     : SimObject(params),
-      bandthofdram(0),
-      bandthofhbm(0),
       rt_side_port(name() + ".rt_side_port", *this, Dispatcher::PortType::RemappingTable),
-      //mm_side_port(name() + ".mm_side_port", *this, Dispatcher::PortType::MigrationManager),
-    //   ac_side_port(name() + ".ac_side_port", *this, Dispatcher::PortType::Accesscounter),
+      ps_side_port(name() + ".ps_side_port", *this, Dispatcher::PortType::PageSwaper),
+      wc_side_port(name() + ".wc_side_port", *this, Dispatcher::PortType::WearLevelcontrol),
       hbm_side_port(name() + ".hbm_side_port", *this, Dispatcher::PortType::PhysicalHbm),
-      dram_side_port(name() + "dram_side_port", *this, Dispatcher::PortType::PhysicalDram),
-      //nvm_side_port(name() + "nvm_side_port", *this, Dispatcher::PortType::PhysicalNvm),
-    //   maxhbmsize(1342177280),
-    //   maxdramsize(1073741824),
-    //   maxnvmsize(8589934592),
-      stats(*this), // overhead
-      _system(NULL)
-      {
-        // _ac = accesscounter();
+      dram_side_port(name() + ".dram_side_port", *this, Dispatcher::PortType::PhysicalDram),
+      event([this]{processEvent();}, name()), 
+      adjust_latency(1000000),
+       _system(NULL),
+      stats(*this) // overhead
+    {
+        _wc = wearlevelcontrol();
         for (int i = 0; i < BlockType::BlockTypeSize; i++) {
             blocked[i] = false;
         }
@@ -39,26 +35,24 @@ Port&
 Dispatcher::getPort(const std::string& if_name, PortID idx) {//根据请求端口的名称返回对应的端口
     if (if_name == "rt_side_port") {
         return rt_side_port;
-    }/*  else if (if_name == "mm_side_port") {
-        return mm_side_port;
-    } else if (if_name == "ac_side_port") {
-        return ac_side_port;
-    }  */else if (if_name == "hbm_side_port") {
+    } else if (if_name == "ps_side_port") {
+        return ps_side_port;
+    } else if (if_name == "wc_side_port") {
+        return wc_side_port;
+    } else if (if_name == "hbm_side_port") {
         return hbm_side_port;
     } else if (if_name == "dram_side_port") {
         return dram_side_port;
-    } /* else if (if_name == "nvm_side_port") {
-        return nvm_side_port;
-    }  */else {
+    } else {
         return SimObject::getPort(if_name, idx);
     }
 }
 
 AddrRangeList
-Dispatcher::getAddrRanges() const {
+Dispatcher::getAddrRanges() const {  //实际上程序直接访问的部分
     DPRINTF(Dispatcher, "Sending new ranges\n");
-    //AddrRangeList hbmranges = hbm_side_port.getAddrRanges();
-    AddrRangeList dramranges = dram_side_port.getAddrRanges();
+    // AddrRangeList hbmranges = hbm_side_port.getAddrRanges();
+    AddrRangeList dramranges = dram_side_port.getAddrRanges();//只让cpu访问
     //AddrRangeList res;
     //AddrRange ranges(dramranges.front().start(), hbmranges.front().end());
     //res.push_back(ranges);
@@ -78,55 +72,42 @@ Dispatcher::sendRangeChange() {
 Tick
 Dispatcher::handleAtomic(PacketPtr pkt) {
     if(pkt->isCache){
+        DPRINTF(Dispatcher, "Dispatcher::handleAtomic isCache\n");
         return hbm_side_port.sendAtomic(pkt);
     }//by crc 240516
-    else/*  if(pkt->isDram) */{
+    else{
         return dram_side_port.sendAtomic(pkt);
     }
     //by crc 240514
-    /* else{
-        return nvm_side_port.sendAtomic(pkt);
-    } */
 }
 
 void
 Dispatcher::handleFunctional(PacketPtr pkt) { 
     if (pkt->isCache){
+        DPRINTF(Dispatcher, "hbm_side_port.sendFunctional \n");
         hbm_side_port.sendFunctional(pkt);//hbm相当于片上高速缓存部分？
     }//by crc 240516
-    else/*  if(pkt->isDram) */{
+    else{
         dram_side_port.sendFunctional(pkt);
     }
-    /* else{
-        nvm_side_port.sendFunctional(pkt);
-    } */
-    
 }
-
+//dp会根据iscache来判断发给哪个内存。
 bool
 Dispatcher::handleRequest(PacketPtr pkt) {
     DPRINTF(Dispatcher, "Got request for addr %#x\n", pkt->getAddr());
-    PacketPtr acpkt = new Packet(pkt, false, true);
+    PacketPtr wcpkt = new Packet(pkt, false, true);//复制一个包发送到ac中做统计
     //这一段能不能修改到复制构造函数里
-    acpkt->remapaddr = pkt->remapaddr;
-    acpkt->iswrite = pkt->isWrite();
-    acpkt->isCache = pkt->isCache;
-    acpkt->isDram = pkt->isDram;
-    // acpkt->hasmigrate = pkt->hasmigrate;
-    acpkt->reqport = pkt->reqport;
-    acpkt->respport = pkt->respport;
-    //发往DRAMcache的包
-    if(pkt->isCache){
-        if (blocked[BlockType::Rt2Hbm] /* || blocked[BlockType::Mm2Hbm] */ || !hbm_side_port.sendPacket(pkt)) {
-            DPRINTF(Dispatcher, "Physical HBM is busy! Request blocked for addr %#x\n", pkt->remapaddr);
-            if (pkt->reqport == Packet::PortType::RemappingTable) {// 如果请求端口是rt。则阻塞rt到hbm
-                blocked[BlockType::Rt2Hbm] = true;
-            } /* else if (pkt->reqport == Packet::PortType::MigrationManager) {
-                blocked[BlockType::Mm2Hbm] = true;
-            } */
-            delete acpkt;//发送方会缓存包
-            return false;
-        }
+    wcpkt->remapaddr = pkt->remapaddr;
+    wcpkt->iswrite = pkt->isWrite();
+    wcpkt->isCache = pkt->isCache;
+    wcpkt->isDram = pkt->isDram;
+    wcpkt->hasswap = pkt->hasswap;
+    wcpkt->reqport = pkt->reqport;
+    wcpkt->respport = pkt->respport;
+    wcpkt->pkttype = pkt->pkttype;
+    //
+    if(pkt->isCache&&!hbm_side_port.blocked()){//iscache会发送包到hbm
+        hbm_side_port.sendPacket(pkt);
         if(pkt->reqport == Packet::PortType::RemappingTable){
             stats.numDisps[pkt->req->requestorId()]++;
             stats.numBusDram[pkt->req->requestorId()]++;
@@ -135,257 +116,85 @@ Dispatcher::handleRequest(PacketPtr pkt) {
         }
         else{
             stats.numDisps[pkt->req->requestorId()]++;
-            //stats.numMM[pkt->req->requestorId()]++;
+            stats.numPS[pkt->req->requestorId()]++;
         }
     }
-    //2.在flat_dram中命中，也就是在内存中命中
-    else if (pkt->isDram) {
-        if (blocked[BlockType::Rt2Dram] /* || blocked[BlockType::Mm2Dram]  */|| !dram_side_port.sendPacket(pkt)) {//尝试发包
-            DPRINTF(Dispatcher, "Physical DRAM is busy! Request blocked for addr %#x\n", pkt->remapaddr);
-            if (pkt->reqport == Packet::PortType::RemappingTable) {
-                blocked[BlockType::Rt2Dram] = true;
-            }/*  else if (pkt->reqport == Packet::PortType::MigrationManager) {
-                blocked[BlockType::Mm2Dram] = true;
-            } */
-            delete acpkt;
-            return false;
-        }
-        if(pkt->reqport == Packet::PortType::RemappingTable){
-            // overhead
-            stats.numDisps[pkt->req->requestorId()]++;
-            stats.numBusDram[pkt->req->requestorId()]++;
-            if(pkt->isRead())
-                stats.numBusDramRead[pkt->req->requestorId()]++;
-        }
-        else{
-            //stats.numMM[pkt->req->requestorId()]++;
-            stats.numDisps[pkt->req->requestorId()]++;   
-        }
-            
-    } else{
-        DPRINTF(Dispatcher, "handleRequest error should no pkt out dram and hbm ", pkt->remapaddr);
-    }
-    //1.如果是发往NVM的pkt，直接下发
-    /* else{
-        if (blocked[BlockType::Rt2Nvm] || blocked[BlockType::Mm2Nvm] || !nvm_side_port.sendPacket(pkt)){
-            DPRINTF(Dispatcher, "Physical DRAM is busy! Request blocked for addr %#x\n", pkt->remapaddr);
-            if (pkt->reqport == Packet::PortType::RemappingTable) {
-                blocked[BlockType::Rt2Nvm] = true;
-            } else if (pkt->reqport == Packet::PortType::MigrationManager) {
-                blocked[BlockType::Mm2Nvm] = true;
+    //2.访问内存的包
+    else if (!dram_side_port.blocked()) {//isdram会发包到dram
+            dram_side_port.sendPacket(pkt);//发包
+            if(pkt->reqport == Packet::PortType::RemappingTable){
+                // overhead
+                stats.numDisps[pkt->req->requestorId()]++;
+                stats.numBusDram[pkt->req->requestorId()]++;
+                if(pkt->isRead())
+                    stats.numBusDramRead[pkt->req->requestorId()]++;
             }
-            return false;
-        }
-        if(pkt->reqport == Packet::PortType::RemappingTable){
-            // overhead
-            stats.numDisps[pkt->req->requestorId()]++;
-            stats.numBusNvm[pkt->req->requestorId()]++;
-            if(pkt->isRead())
-                stats.numBusNvmRead[pkt->req->requestorId()]++;
-        }
-        else{
-            stats.numMM[pkt->req->requestorId()]++;
-            stats.numDisps[pkt->req->requestorId()]++;   
-        }
-    } */
-    //发送方是RemappingTable，并且发送失败
-    // if (acpkt->reqport == Packet::PortType::RemappingTable && (blocked[BlockType::Rt2Ac] || !ac_side_port.sendPacket(acpkt))) {
-    //     DPRINTF(Dispatcher, "Access Counter is busy! Request blocked for addr %#x\n", acpkt->remapaddr);
-    //     if (acpkt->reqport == Packet::PortType::RemappingTable) {
-    //         blocked[BlockType::Rt2Ac] = true;
-    //     }
-    //     delete acpkt;
-    //     return false;
-    // }
-    delete acpkt;
+            else{
+                stats.numDisps[pkt->req->requestorId()]++; 
+                stats.numPS[pkt->req->requestorId()]++;  
+            }
+                
+    }else{//hbm 和dram都发送失败，
+        delete wcpkt;
+        return false;
+    }
+
+    //发送拷贝包到wc中， 统计，这个包可能发送失败吗？
+    if (wcpkt->reqport == Packet::PortType::RemappingTable&& wcpkt->pkttype != Packet::PacketType::AccessRt && !wc_side_port.blocked()) {
+        wc_side_port.sendPacket(wcpkt);
+        //by crc 240522
+    }
+
     return true;
 }
-//接收响应包
+//接收响应包,hbm的包要响应吗？，应该不需要转发，直接返回true就行了
 bool
 Dispatcher::handleResponse(PacketPtr pkt) {
-    if (pkt->reqport == Packet::PortType::RemappingTable) {
-        // if (blocked[BlockType::Dram2Rt] || blocked[BlockType::Hbm2Rt] || !rt_side_port.sendPacket(pkt)) {
-        // DPRINTF(Dispatcher, "Remapping table is busy! Response blocked for addr %#x\n", pkt->remapaddr);
-        if (pkt->respport == Packet::PortType::PhysicalDram) {//将dram响应的数据包发给rt模块
-            DPRINTF(Dispatcher, "pkt->respport == Packet::PortType::PhysicalDram\n");
-            if(blocked[BlockType::Dram2Rt] ) {                
-                DPRINTF(Dispatcher, "Remapping table is busy! dram has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{//发送响应
-                if (!rt_side_port.sendPacket(pkt)){                   
-                    blocked[BlockType::Dram2Rt] = true;
-                    DPRINTF(Dispatcher, "Remapping table is busy! dram Response blocked for addr %#x\n", pkt->remapaddr);         
-                    return false;
-                }
-            }
-        }
-        else if(pkt->respport == Packet::PortType::PhysicalHbm){
-            DPRINTF(Dispatcher, "pkt->respport == Packet::PortType::PhysicalHbm\n");
-            if(blocked[BlockType::Hbm2Rt] ) {                
-                DPRINTF(Dispatcher, "Remapping table is busy! hbm has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{
-                if (!rt_side_port.sendPacket(pkt)){                   
-                    blocked[BlockType::Hbm2Rt] = true;
-                    DPRINTF(Dispatcher, "Remapping table is busy! hbm Response blocked for addr %#x\n", pkt->remapaddr);  
-                    return false;
-                }
-            }
-        }
-        /* else if(pkt->respport == Packet::PortType::PhysicalNvm){
-            if(blocked[BlockType::Nvm2Rt] ) {                
-                DPRINTF(Dispatcher, "Remapping table is busy! nvm has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{
-                if (!rt_side_port.sendPacket(pkt)){                   
-                    blocked[BlockType::Nvm2Rt] = true;
-                    DPRINTF(Dispatcher, "Remapping table is busy! nvm Response blocked for addr %#x\n", pkt->remapaddr);  
-                    return false;
-                }
-            }
-        } */
-    } /* else if (pkt->reqport == Packet::PortType::MigrationManager) {
-        if (pkt->respport == Packet::PortType::PhysicalDram) {
-            if(blocked[BlockType::Dram2Mm] ){
-                DPRINTF(Dispatcher, "Migration Manager is busy! dram has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{
-                if (!mm_side_port.sendPacket(pkt)){                   
-                    blocked[BlockType::Dram2Mm] = true;
-                    DPRINTF(Dispatcher, "Migration Manager is busy! dram Response blocked for addr %#x\n", pkt->remapaddr);
-                    return false;
-                }
-            }
-        }
-        else if(pkt->respport == Packet::PortType::PhysicalHbm){
-            if(blocked[BlockType::Hbm2Mm] ){
-                DPRINTF(Dispatcher, "Migration Manager is busy! hbm has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{
-                if (!mm_side_port.sendPacket(pkt)){    
-                    DPRINTF(Dispatcher, "Migration Manager is busy! hbm Response blocked for addr %#x\n", pkt->remapaddr);               
-                    blocked[BlockType::Hbm2Mm] = true;
-                    return false;
-                }
-            }
-        }
-        else if(pkt->respport == Packet::PortType::PhysicalNvm){
-            if(blocked[BlockType::Nvm2Mm] ){
-                DPRINTF(Dispatcher, "Migration Manager is busy! nvm has blocked Response blocked for addr %#x\n", pkt->remapaddr);
-                return false;
-            }
-            else{
-                if (!mm_side_port.sendPacket(pkt)){    
-                    DPRINTF(Dispatcher, "Migration Manager is busy! nvm Response blocked for addr %#x\n", pkt->remapaddr);               
-                    blocked[BlockType::Nvm2Mm] = true;
-                    return false;
-                }
-            }
-        }
-    } */
-    DPRINTF(Dispatcher, "Got response for addr %#x\n", pkt->getAddr());
-
-    return true;
-}
-//阻塞时重发
-void
-Dispatcher::handleReqRetry() {
-    assert(blocked[BlockType::Rt2Ac] ||
-           blocked[BlockType::Rt2Dram] || blocked[BlockType::Mm2Dram] ||
-           blocked[BlockType::Rt2Hbm] || blocked[BlockType::Mm2Hbm] ||
-           blocked[BlockType::Rt2Nvm] || blocked[BlockType::Mm2Nvm]);
-
-    /* if (blocked[BlockType::Mm2Dram] || blocked[BlockType::Mm2Nvm]) {
-        blocked[BlockType::Mm2Dram] = false;
-        blocked[BlockType::Mm2Hbm] = false;
-        blocked[BlockType::Mm2Nvm] = false;
-        mm_side_port.trySendRetry();
-    }
-
-    else  */if (blocked[BlockType::Rt2Ac] || blocked[BlockType::Rt2Dram] /* || blocked[BlockType::Rt2Nvm] */) {
-        blocked[BlockType::Rt2Ac] = false;
-        blocked[BlockType::Rt2Dram] = false;
-        blocked[BlockType::Rt2Hbm] = false;
-        // blocked[BlockType::Rt2Nvm] = false;
+    if (pkt->reqport == Packet::PortType::RemappingTable&&!rt_side_port.blocked()) {
+        rt_side_port.sendPacket(pkt);//
         rt_side_port.trySendRetry();
+        return true;
+        // DPRINTF(Dispatcher, "Got response for addr %#x to RemappingTable\n", pkt->getAddr());
+    } else if (pkt->reqport == Packet::PortType::PageSwaper&&!ps_side_port.blocked()) {
+        ps_side_port.sendPacket(pkt);/* 发送完响应之后尝试让req发送阻塞的包 */
+        ps_side_port.trySendRetry();
+        return true;
+        // DPRINTF(Dispatcher, "Got response for addr %#x to PageSwaper \n", pkt->getAddr());
     }
-    
+    return false;
 }
-//要求下一级重发响应，要求dram重发响应
-void
-Dispatcher::handleRespRetry() {
-    assert(blocked[BlockType::Dram2Rt] || blocked[BlockType::Hbm2Rt] /* ||
-           blocked[BlockType::Dram2Mm] || blocked[BlockType::Hbm2Mm] ||
-           blocked[BlockType::Nvm2Mm] || blocked[BlockType::Nvm2Rt] */);
-    if (blocked[BlockType::Dram2Rt]/*  || blocked[BlockType::Dram2Mm] */) {
-        DPRINTF(Dispatcher, "handle RespRetry,Response for dram blocked  \n");
-        blocked[BlockType::Dram2Rt] = false;
-        /* blocked[BlockType::Dram2Mm] = false; */
-        dram_side_port.trySendRetry();
-    }
-    // else
-    if (blocked[BlockType::Hbm2Rt] /* || blocked[BlockType::Hbm2Mm] */) {
-        DPRINTF(Dispatcher, "handle RespRetry,Response for hbm blocked  \n");
-        blocked[BlockType::Hbm2Rt] = false;
-        /* blocked[BlockType::Hbm2Mm] = false; */
-        hbm_side_port.trySendRetry();
-    }
-    /* if (blocked[BlockType::Nvm2Rt] || blocked[BlockType::Nvm2Mm]) {
-        DPRINTF(Dispatcher, "handle RespRetry,Response for nvm blocked  \n");
-        blocked[BlockType::Nvm2Rt] = false;
-        blocked[BlockType::Nvm2Mm] = false;
-        nvm_side_port.trySendRetry();
-    } */
-}
-
 
 Dispatcher::CpuSidePort::CpuSidePort(const std::string& _name,
                                      Dispatcher& _disp,
                                      Dispatcher::PortType _type)
-    : ResponsePort(_name, &_disp),
+    : ResponsePort(_name),
       disp(_disp),
       porttype(_type),
       needRetry(false),
-    //   blocked(false),
-      hbm_blocked(false),
-      dram_blocked(false)/* ,
-      nvm_blocked(false) */{}
+      blockedPacket(nullptr){}
 
 AddrRangeList
 Dispatcher::CpuSidePort::getAddrRanges() const {
     return disp.getAddrRanges();
 }
 
-//尝试发包
-bool
-Dispatcher::CpuSidePort::sendPacket(PacketPtr pkt) {
+//尝试发包给上一级
+void
+Dispatcher::CpuSidePort::sendPacket(PacketPtr pkt) {//
     // panic_if(blocked, "Should never try to send if blocked!");
-    panic_if(hbm_blocked && dram_blocked /* && nvm_blocked */, "Should never try to send if blocked!");
-    if (!sendTimingResp(pkt)) {
-        if(pkt->isCache){
-            hbm_blocked = true;
-        }
-        else/*  if(pkt->isDram) */{
-            dram_blocked = true;
-        }                                                                                                                   
-        /* else
-            nvm_blocked = true; */
-        return false;
-    } else {
-        return true;
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+    
+    if (!sendTimingResp(pkt)) {                                                                                                     
+        DPRINTF(Dispatcher, "Dispatcher CpuSidePort sendPacket false\n");
+        blockedPacket = pkt;
     }
 }
 
+/* 需要上层重发，并且当前没有待发送的response */
 void
 Dispatcher::CpuSidePort::trySendRetry()
-{
-    // if (needRetry && !blocked) {
-    if (needRetry && !(dram_blocked && hbm_blocked/*  && nvm_blocked */)) {
+{   
+    if (needRetry && blockedPacket == nullptr) {
         needRetry = false;
         DPRINTF(Dispatcher, "Sending retry req for %d\n", id);
         sendRetryReq();
@@ -403,14 +212,14 @@ Dispatcher::CpuSidePort::recvFunctional(PacketPtr pkt) {
 }
 
 void
-Dispatcher::CpuSidePort::setReqPort(PacketPtr pkt) {
+Dispatcher::CpuSidePort::setReqPort(PacketPtr pkt) {//在dp中接收到包时就设置包的类型
     if (porttype == Dispatcher::PortType::RemappingTable) {
         pkt->reqport = Packet::PortType::RemappingTable;
-    } /* else if (porttype == Dispatcher::PortType::MigrationManager) {
-        pkt->reqport = Packet::PortType::MigrationManager;
-    } */
+    } else if (porttype == Dispatcher::PortType::PageSwaper) {
+        pkt->reqport = Packet::PortType::PageSwaper;
+    }
 }
-
+//
 bool
 Dispatcher::CpuSidePort::recvTimingReq(PacketPtr pkt) {
     setReqPort(pkt);
@@ -426,43 +235,34 @@ void
 Dispatcher::CpuSidePort::recvRespRetry() {
     // assert(blocked);
     // blocked = false;
-    assert(dram_blocked /* || nvm_blocked */ || hbm_blocked);
-    if(hbm_blocked)
-        hbm_blocked = false;
-    if(dram_blocked)
-        dram_blocked = false;
-    // if(nvm_blocked)
-    //     nvm_blocked = false;
-    disp.handleRespRetry();
+    assert(blockedPacket != nullptr);
+
+    PacketPtr pkt = blockedPacket;
+    
+    blockedPacket = nullptr;
+
+    DPRINTF(Dispatcher, "Dispatcher CpuSidePort Retrying response pkt %s\n", pkt->print());
+    
+    sendPacket(pkt);
+
+    trySendRetry();
 }
 
 Dispatcher::MemSidePort::MemSidePort(const std::string& _name,
                                      Dispatcher& _disp,
                                      Dispatcher::PortType _type)
-    : RequestPort(_name, &_disp),
+    : RequestPort(_name),
       disp(_disp),
       porttype(_type),
       needRetry(false),
-      blocked(false) {}
-
-bool
-Dispatcher::MemSidePort::sendPacket(PacketPtr pkt) {
-    panic_if(blocked, "Should never try to send if blocked!");
-    // If we can't send the packet across the port, return false.
-    if (!sendTimingReq(pkt)) {
-        blocked = true;
-        return false;
-    } 
-    else
-        return true;
-}
+      blockedPacket(nullptr) {}
 
 void
-Dispatcher::MemSidePort::trySendRetry() {
-    if (needRetry && !blocked) {
-        needRetry = false;
-        DPRINTF(Dispatcher, "Sending retry req for %d\n", id);
-        sendRetryResp();
+Dispatcher::MemSidePort::sendPacket(PacketPtr pkt) {
+    panic_if(blockedPacket!= nullptr, "Should never try to send if blocked!");
+    // If we can't send the packet across the port, return false.
+    if (!sendTimingReq(pkt)) {
+        blockedPacket = pkt;
     }
 }
 
@@ -470,7 +270,7 @@ void
 Dispatcher::MemSidePort::setRespPort(PacketPtr pkt) {
     if (porttype == Dispatcher::PortType::PhysicalDram) {
         pkt->respport = Packet::PortType::PhysicalDram;
-    } else/*  if (porttype == Dispatcher::PortType::PhysicalHbm)  */{
+    } else if (porttype == Dispatcher::PortType::PhysicalHbm) {
         pkt->respport = Packet::PortType::PhysicalHbm;
     } /* else if (porttype == Dispatcher::PortType::PhysicalNvm) {
         pkt->respport = Packet::PortType::PhysicalNvm;
@@ -492,9 +292,13 @@ Dispatcher::MemSidePort::recvTimingResp(PacketPtr pkt) {
 
 void
 Dispatcher::MemSidePort::recvReqRetry() {
-    assert(blocked);
-    blocked = false;
-    disp.handleReqRetry();
+    assert(blockedPacket != nullptr);
+
+    PacketPtr pkt = blockedPacket;
+
+    blockedPacket = nullptr;
+
+    sendPacket(pkt);
 }
 
 void
@@ -507,7 +311,7 @@ Dispatcher::MemStats::MemStats(Dispatcher &_disp)
     ADD_STAT(numBusDram, statistics::units::Count::get(), "Number of bus dram packets"),
     ADD_STAT(numBusHbm, statistics::units::Count::get(), "Number of bus hbm packets"),
     ADD_STAT(numBusNvm, statistics::units::Count::get(), "Number of bus nvm packets"),
-    ADD_STAT(numMM, statistics::units::Count::get(), "Number of access mm packets"),
+    ADD_STAT(numPS, statistics::units::Count::get(), "Number of access ps packets"),
     ADD_STAT(numDisps, statistics::units::Count::get(), "Number of packets dispatch"),
     ADD_STAT(numBusDramRead, statistics::units::Count::get(), "Number of packets bus dram read"),
     ADD_STAT(numBusHbmRead, statistics::units::Count::get(), "Number of packets bus hbm read"),
@@ -559,12 +363,12 @@ Dispatcher::MemStats::regStats()
     }
 
 
-    numMM
+    numPS
         .init(max_requestors)
         .flags(total | nozero | nonan)
         ;
     for (int i = 0; i < max_requestors; i++) {
-        numMM.subname(i, sys->getRequestorName(i));
+        numPS.subname(i, sys->getRequestorName(i));
     }
 
     numDisps
@@ -642,6 +446,16 @@ Dispatcher::MemStats::regStats()
     }
 
     avDisps = numDisps / simSeconds;
+}
+void Dispatcher::startup(){
+    // schedule(event, adjust_latency);
+}
+
+void Dispatcher::processEvent() {
+    // DPRINTF(Dispatcher, "Dispatcher EventProcess");
+    // for(auto it:blocked)std::cout<<" "<<it<<" "<<std::endl;
+    // DPRINTF(Dispatcher, " Dispatcher EventProcess \n");
+    // schedule(event, curTick() + adjust_latency);
 }
 
 } // namespace memory

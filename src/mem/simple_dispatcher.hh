@@ -111,6 +111,7 @@ class Simple_Dispatcher : public SimObject
     };
 
     BusSidePort bus_side_port;//响应membus的请求
+    
     MemSidePort dram_side_port;//向dram请求数据
     MemSidePort hbm_side_port;//向hbm请求映射表
     EventFunctionWrapper event; // packets simple_dispatch event

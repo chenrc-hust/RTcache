@@ -574,6 +574,7 @@ SimpleMemory::MemoryPort::MemoryPort(const std::string& _name,
 AddrRangeList
 SimpleMemory::MemoryPort::getAddrRanges() const
 {
+    int i = 0;
     AddrRangeList ranges;
     ranges.push_back(mem.getAddrRange());
     return ranges;

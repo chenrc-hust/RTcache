@@ -245,14 +245,14 @@ Packet::getAddrRange() const
     return RangeSize(getAddr(), getSize());
 }
 //by crc 240516
-AddrRange
-Packet::getRemapAddrRange() const
-{
-    if(hasremap)
-        return RangeSize(remapaddr, getSize());
-    else
-        return RangeSize(getAddr(), getSize());
-}
+// AddrRange//一次访问的范围，不知道什么用
+// Packet::getRemapAddrRange() const
+// {
+//     if(hasremap)
+//         return RangeSize(remapaddr, getSize());
+//     else
+//         return RangeSize(getAddr(), getSize());
+// }
 
 
 bool

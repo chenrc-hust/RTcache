@@ -1,9 +1,11 @@
 from m5.params import *
 from m5.SimObject import SimObject
 
-class AccessCounter(SimObject):
-    type = 'AccessCounter'
-    cxx_header = "mem/accesscounter.hh"
+class WearLevelControl(SimObject):
+    type = 'WearLevelControl'
+    cxx_header = "mem/wearlevelcontrol.hh"
+    cxx_class = "gem5::memory::WearLevelControl"
+
     # nvm_size = Param.MemorySize('8GB',
     #                                "Size of NVM")
     dram_size = Param.MemorySize('2048MB',
@@ -14,9 +16,9 @@ class AccessCounter(SimObject):
     dp_side_port = ResponsePort("port for receiving requests from"
                         "the dispatcher")
     
-    mm_side_port = RequestPort("port for sending migration requests to"
-                        "migration manager")
+    # mm_side_port = RequestPort("port for sending migration requests to"
+    #                     "migration manager")
 
-    rt_side_port = ResponsePort("port for receiving requests from"
-                        "the remappingtable")
+    ps_side_port = RequestPort("port sendint requests to"
+                        "pages waper")
     

@@ -71,10 +71,10 @@ AbstractMemory::AbstractMemory(const Params &p) :
     panic_if(!range.valid() || !range.size(),
              "Memory range %s must be valid with non-zero size.",
              range.to_string());
-    std::cout << "ab memory dram size: " << dram_size<<std::endl;
-    std::cout << "ab memory p. dram size: " << p.dram_size<<std::endl;
-    std::cout << "ab hbm_size size: " << hbm_size<<std::endl;
-    std::cout << "ab memory p. hbm_size size: " << p.hbm_size<<std::endl;
+    // std::cout << "ab memory dram size: " << dram_size<<std::endl;
+    // std::cout << "ab memory p. dram size: " << p.dram_size<<std::endl;
+    // std::cout << "ab hbm_size size: " << hbm_size<<std::endl;
+    // std::cout << "ab memory p. hbm_size size: " << p.hbm_size<<std::endl;
     //std::cout << "ab memroy p. nvm size: " << p.nvm_size << std::endl;
 }
 
@@ -386,14 +386,26 @@ tracePacket(System *sys, const char *label, PacketPtr pkt)
 void
 AbstractMemory::access(PacketPtr pkt)
 {
-    /* // hjy modify 7.14
-    // 屏蔽来自MM的包，相当于模拟不做访问
-    if(pkt->reqport == Packet::PortType::MigrationManager){
+    // //by crc 240522
+    // 屏蔽来自Ps的包，相当于模拟不做访问
+    if(pkt->reqport == Packet::PortType::PageSwaper){
+        DPRINTF(MemoryAccess, "Packet::PortType::PageSwaper  on 0x%x: return",pkt->getAddr());
         if (pkt->needsResponse()) {
+            DPRINTF(MemoryAccess, "Packet::PortType::PageSwaper  on 0x%x: response",pkt->getAddr());
             pkt->makeResponse();
         }
         return;
-    } */
+    }
+    if(pkt->pkttype == Packet::PacketType::AccessRt){
+        DPRINTF(MemoryAccess, "Packet::PacketType::AccessRt  on 0x%x: retur \n",pkt->getAddr());
+        if (pkt->needsResponse()) {
+            DPRINTF(MemoryAccess, "Packet::PacketType::AccessRt on 0x%x: response \n",pkt->getAddr());
+            pkt->makeResponse();
+        }
+        return;
+    }
+
+
     if (pkt->cacheResponding()) {
         DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
                 pkt->getAddr());
@@ -407,30 +419,10 @@ AbstractMemory::access(PacketPtr pkt)
     }
 
     assert(pkt->getAddrRange().isSubset(range));
+    
+    uint8_t *host_addr = toHostAddr(pkt->getAddr());
 
-    uint8_t *host_addr;
-    /*  有问题*/
-    //hjy modify 22.3.16
-    // 没有被cache说明是直接访问NVM
-    if (!pkt->isDram) {//不是内存，
-        assert(pkt->getAddrRange().isSubset(range));
-        host_addr = toHostAddr(pkt->getAddr());
-        DPRINTF(MemoryAccess, "! pkt->isDram  on 0x%x: and host_addr  0x%x\n",pkt->getAddr(),host_addr);
-
-    } else {//如果
-        // 被cache但没有被remap 说明是nvm->dram
-        if (!pkt->isCache) {//
-            
-            host_addr = toHostAddr_ddr(pkt->getAddr()) ;
-            DPRINTF(MemoryAccess, "pkt->isCache  on 0x%x   and  host _addr 0x%x  : \n",pkt->getAddr(),host_addr);
-        
-        // 既被cache也被remap 说明是nvm->hbm
-        } else {
-            host_addr = toHostAddr_hbm(pkt->getAddr()) +  dram_size ;
-            DPRINTF(MemoryAccess, "pkt->isCache and pkt->isDram on 0x%x: and host _addr 0x%x\n",pkt->getAddr(),host_addr);
-
-        }
-    }
+    DPRINTF(MemoryAccess, "access dram direct  on 0x%x: and host_addr  0x%x\n",pkt->getAddr(),host_addr);
 
     if (pkt->cmd == MemCmd::SwapReq) {
         if (pkt->isAtomicOp()) {
@@ -516,114 +508,12 @@ AbstractMemory::access(PacketPtr pkt)
 }
 //by crc 240514
 
-void
-AbstractMemory::access_remap(PacketPtr pkt)
-{
-    //std::cout << "access has remap!" << std::endl;
-    if (pkt->cacheResponding()) {
-        DPRINTF(MemoryAccess, "Cache responding to %#llx: not responding\n",
-                pkt->remapaddr);
-        return;
-    }
-
-    /* if (pkt->cmd == MemCmd::CleanEvict || pkt->cmd == MemCmd::WritebackClean) {
-        DPRINTF(MemoryAccess, "CleanEvict  on 0x%x: not responding\n",
-                pkt->remapaddr);
-      return;
-    } */
-
-    assert(pkt->getRemapAddrRange().isSubset(range));
-
-    uint8_t *host_addr = toHostAddr(pkt->remapaddr);
-
-    if (pkt->cmd == MemCmd::SwapReq) {
-        if (pkt->isAtomicOp()) {
-            if (pmemAddr) {
-                pkt->setData(host_addr);
-                (*(pkt->getAtomicOp()))(host_addr);
-            }
-        } else {
-            std::vector<uint8_t> overwrite_val(pkt->getSize());
-            uint64_t condition_val64;
-            uint32_t condition_val32;
-
-            panic_if(!pmemAddr, "Swap only works if there is real memory " \
-                     "(i.e. null=False)");
-
-            bool overwrite_mem = true;
-            // keep a copy of our possible write value, and copy what is at the
-            // memory address into the packet
-            pkt->writeData(&overwrite_val[0]);
-            pkt->setData(host_addr);
-
-            if (pkt->req->isCondSwap()) {
-                if (pkt->getSize() == sizeof(uint64_t)) {
-                    condition_val64 = pkt->req->getExtraData();
-                    overwrite_mem = !std::memcmp(&condition_val64, host_addr,
-                                                 sizeof(uint64_t));
-                } else if (pkt->getSize() == sizeof(uint32_t)) {
-                    condition_val32 = (uint32_t)pkt->req->getExtraData();
-                    overwrite_mem = !std::memcmp(&condition_val32, host_addr,
-                                                 sizeof(uint32_t));
-                } else
-                    panic("Invalid size for conditional read/write\n");
-            }
-
-            if (overwrite_mem)
-                std::memcpy(host_addr, &overwrite_val[0], pkt->getSize());
-
-            assert(!pkt->req->isInstFetch());
-            TRACE_PACKET("Read/Write");
-            stats.numOther[pkt->req->requestorId()]++;
-        }
-    } else if (pkt->isRead()) {
-        assert(!pkt->isWrite());
-        if (pkt->isLLSC()) {
-            assert(!pkt->fromCache());
-            // if the packet is not coming from a cache then we have
-            // to do the LL/SC tracking here
-            trackLoadLocked(pkt);
-        }
-        if (pmemAddr) {
-            pkt->setData(host_addr);
-        }
-        TRACE_PACKET(pkt->req->isInstFetch() ? "IFetch" : "Read");
-        stats.numReads[pkt->req->requestorId()]++;
-        stats.bytesRead[pkt->req->requestorId()] += pkt->getSize();
-        if (pkt->req->isInstFetch())
-            stats.bytesInstRead[pkt->req->requestorId()] += pkt->getSize();
-    } else if (pkt->isInvalidate() || pkt->isClean()) {
-        assert(!pkt->isWrite());
-        // in a fastmem system invalidating and/or cleaning packets
-        // can be seen due to cache maintenance requests
-
-        // no need to do anything
-    } else if (pkt->isWrite()) {
-        if (writeOK(pkt)) {
-            if (pmemAddr) {
-                pkt->writeData(host_addr);
-                DPRINTF(MemoryAccess, "%s write due to %s\n",
-                        __func__, pkt->print());
-            }
-            assert(!pkt->req->isInstFetch());
-            TRACE_PACKET("Write");
-            stats.numWrites[pkt->req->requestorId()]++;
-            stats.bytesWritten[pkt->req->requestorId()] += pkt->getSize();
-        }
-    } else {
-        panic("Unexpected packet %s", pkt->print());
-    }
-
-    if (pkt->needsResponse()) {
-        pkt->makeResponse();
-    }
-}
-
+//
 void
 AbstractMemory::functionalAccess(PacketPtr pkt)
 {
-    /* 映射会导致相关地址信息改变，修改地址范围判断逻辑 */
-    if(!pkt->hascache)
+    // /* 映射会导致相关地址信息改变，修改地址范围判断逻辑 */
+    // if(!pkt->hascache)
         assert(pkt->getAddrRange().isSubset(range));
 
     uint8_t *host_addr = toHostAddr(pkt->getAddr());

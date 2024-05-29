@@ -121,11 +121,11 @@ Simple_Dispatcher::handleResponse(PacketPtr pkt) {
         stats.sumofpacketslatency[pkt->req->requestorId()] += thislatency;
     }
 
-    // add event on 8.16
-    if (!event.scheduled()) {
-        DPRINTF(Simple_Dispatcher, "resp event schedule\n");
-        schedule(event, curTick());
-    }
+    // // add event on 8.16
+    // if (!event.scheduled()) {
+    //     DPRINTF(Simple_Dispatcher, "resp event schedule\n");
+    //     schedule(event, curTick());
+    // }
     if(pkt->respport == Packet::PortType::PhysicalDram){
         if(blocked[SMBlockType::DRAM2SM])
             return false;
@@ -229,7 +229,7 @@ Simple_Dispatcher::BusSidePort::sendPacket(PacketPtr pkt) {
         return true;
     }
 }
-
+//
 void
 Simple_Dispatcher::BusSidePort::trySendRetry()
 {
@@ -303,7 +303,7 @@ Simple_Dispatcher::MemSidePort::trySendRetry() {
         // Only send a retry if the port is now completely free
         needRetry = false;
         DPRINTF(Simple_Dispatcher, "MemSidePort ,Sending retry req for %d\n", id);
-        sendRetryResp();
+        sendRetryResp();//
     }
 }
 

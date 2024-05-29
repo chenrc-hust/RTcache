@@ -13,7 +13,7 @@
 #include "sim/sim_object.hh"
 #include "sim/stats.hh"
 #include "sim/system.hh"
-// #include "mem/accesscounter.hh" //by crc 240514
+#include "mem/wearlevelcontrol.hh" //by crc 240514
 #include "base/statistics.hh"
 namespace gem5 {
 
@@ -22,39 +22,37 @@ class System;
 namespace memory
 {
 
-// class AccessCounter;
+//class AccessCounter;
+
+class WearLevelControl;
 
 class Dispatcher : public SimObject {
   public:
     enum PortType {//枚举端口的类型
       RemappingTable,
       MigrationManager,
+      PageSwaper,
       Accesscounter,
       PhysicalDram,
       PhysicalHbm,
-      PhysicalNvm
+      PhysicalNvm,
+      WearLevelcontrol//不能完全一样，
     };
 
     enum BlockType {//枚举阻塞的类型
-      Rt2Ac,    // Request packet from Remmaping Table   blocks Acess counter ，rt导致ac阻塞
-      // Mm2Ac,    // Request packet from Migration Manager blocks Acess counter
+      Rt2Wc,    // Request packet from Remmaping Table   blocks Acess counter ，rt导致ac阻塞
       Rt2Hbm,   // Request packet from Remmaping Table   blocks Physical Hbm
-      Mm2Hbm,   // Request packet from Migration Manager blocks Physical Hbm
+      Ps2Hbm,   // Request packet from Migration Manager blocks Physical Hbm
       Rt2Dram,  // Request packet from Remmaping Table   blocks Physical Dram
-      Mm2Dram,  // Request packet from Migration Manager blocks Physical Dram
-      Rt2Nvm,   // Request packet from Remmaping Table   blocks Physical Nvm
-      Mm2Nvm,   // Request packet from Migration Manager blocks Physical Nvm
+      Ps2Dram,  // Request packet from Migration Manager blocks Physical Dram
 
       Dram2Rt,  // Response packet from Physical Dram    blocks Remmaping Table
       Hbm2Rt,   // Response packet from Physical Hbm     blocks Remmaping Table
-      Nvm2Rt,   // Response packet from Physical Nvm     blocks Remmaping Table
-      Dram2Mm,  // Response packet from Physical Dram    blocks Migration Manager
-      Hbm2Mm,   // Response packet from Physical Hbm     blocks Migration Manager
-      Nvm2Mm,   // Response packet from Physical Nvm     blocks Remmaping Table
+      Dram2Ps,  // Response packet from Physical Dram    blocks Migration Manager
+      Hbm2Ps,   // Response packet from Physical Hbm     blocks Migration Manager
       BlockTypeSize
     };
 
-    
     PARAMS(Dispatcher);
 
     Dispatcher(const DispatcherParams &params);
@@ -63,27 +61,23 @@ class Dispatcher : public SimObject {
     // overhead
     System* system() const { return _system; }
     void system(System *sys) { _system = sys; }
-    // AccessCounter* accesscounter() const { return _ac; }//获取计数器
-    // void accesscounter(AccessCounter *ac) { _ac = ac; }
-    uint64_t bandthofdram;//？带宽？
-    uint64_t bandthofhbm;
-
+    
+    WearLevelControl* wearlevelcontrol()const {return _wc;}
+    void wearlevelcontrol(WearLevelControl *wc){_wc=wc;}
+    void startup();
   private:  
     class CpuSidePort : public ResponsePort {//名为cpuside连接到rt
       private:
         Dispatcher& disp;
         PortType porttype;
         bool needRetry;
-        // bool blocked;
-        //adds
-        bool hbm_blocked;
-        bool dram_blocked;
-        // bool nvm_blocked;
+        PacketPtr blockedPacket;    
         void setReqPort(PacketPtr pkt);
       public:
         CpuSidePort(const std::string& _name, Dispatcher& _disp, Dispatcher::PortType _type);
         AddrRangeList getAddrRanges() const override;
-        bool sendPacket(PacketPtr pkt);
+        bool blocked() { return (blockedPacket != nullptr); }
+        void sendPacket(PacketPtr pkt);
         void trySendRetry();
       protected:
         Tick recvAtomic(PacketPtr pkt) override;
@@ -97,12 +91,14 @@ class Dispatcher : public SimObject {
         Dispatcher& disp;
         PortType porttype;
         bool needRetry;
-        bool blocked;//
+        PacketPtr blockedPacket; 
         void setRespPort(PacketPtr pkt);
       public:
         MemSidePort(const std::string& _name, Dispatcher& _disp, Dispatcher::PortType _type);
-        bool sendPacket(PacketPtr pkt);
-        void trySendRetry();
+        bool blocked() { return (blockedPacket != nullptr); }
+        void sendPacket(PacketPtr pkt);
+       
+      
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
@@ -110,17 +106,15 @@ class Dispatcher : public SimObject {
     };
 
     CpuSidePort rt_side_port;   // connect to remapping table
-    //CpuSidePort mm_side_port;   // connect to migration manager
+    CpuSidePort ps_side_port;   // connect to pageswaper
 
-    // MemSidePort ac_side_port;   // connect to access counter
+    MemSidePort wc_side_port;   // connect to wearlevel counter 
     MemSidePort hbm_side_port;  // connect to physical hbm
     MemSidePort dram_side_port; // connect to physical dram
     //MemSidePort nvm_side_port; // connect to physical nvm
 
     bool blocked[BlockType::BlockTypeSize];
-    // const uint64_t maxhbmsize;
-    // const uint64_t maxdramsize;
-    // const uint64_t maxnvmsize;
+
     AddrRangeList getAddrRanges() const;
     void sendRangeChange();
     Tick handleAtomic(PacketPtr pkt);
@@ -129,13 +123,16 @@ class Dispatcher : public SimObject {
     bool handleResponse(PacketPtr pkt);
     void handleReqRetry();
     void handleRespRetry();//
-    bool isDramOrHbm(PacketPtr pkt);
+    EventFunctionWrapper event;
+    void processEvent();
+    Tick adjust_latency;//迁移阈值调整时延
+
     // bool isNvmOrcache(PacketPtr pkt);
     
   protected:
 
     System *_system;
-    // AccessCounter* _ac;
+    WearLevelControl * _wc;
 
     struct MemStats : public statistics::Group {
       MemStats(Dispatcher &_disp);
@@ -151,7 +148,7 @@ class Dispatcher : public SimObject {
       /** Number of bus nvm packets */
       statistics::Vector numBusNvm;
       /** Number of access mm packets */
-      statistics::Vector numMM;
+      statistics::Vector numPS;
       /** Number of packets dispatch */
       statistics::Vector numDisps;
       /** Number of packets bus dram read */

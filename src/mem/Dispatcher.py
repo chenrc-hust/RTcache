@@ -1,4 +1,21 @@
-from m5.params import *
+/*
+ * Modified by: chenrc11 <1065313246@qq.com>
+ * Date: 2024-05-29 15:25:23
+ */
+/*
+ * Modified by: chenrc11 <1065313246@qq.com>
+ * Date: 2024-05-29 15:25:23
+ */
+/*
+ * Modified by: chenrc11 <1065313246@qq.com>
+ * Date: 2024-05-29 15:25:23
+ */
+/*
+ * Modified by: chenrc11 <1065313246@qq.com>
+ * Date: 2024-05-29 15:25:23
+ */
+/*
+m m5.params import *
 from m5.SimObject import SimObject
 
 # A wrapper for DRAMSim3 multi-channel memory controller
@@ -13,8 +30,8 @@ class Dispatcher(SimObject):
     # mm_side_port = ResponsePort("port for receiving requests from"
     #                     "migration manager")
     
-    # ac_side_port = RequestPort("port for sending requests to"
-    #                     "access counter")
+    wc_side_port = RequestPort("port for sending requests to"
+                        "wearlevelcontrol ")
 
     hbm_side_port = RequestPort("port for sending requests to"
                         "physical hbm memory")
@@ -24,3 +41,6 @@ class Dispatcher(SimObject):
 
     # nvm_side_port = RequestPort("port for sending requests to"
     #                     "physical nvm memory")
+
+    ps_side_port = ResponsePort("port for recv requests from"
+                        "pageswaper ")

@@ -69,8 +69,8 @@ DRAMsim3::DRAMsim3(const Params &p) :
     // Register a callback to compensate for the destructor not
     // being called. The callback prints the DRAMsim3 stats.
     registerExitCallback([this]() { wrapper.printStats(); });
-    std::cout << "dramsim3 dram size: " << p.dram_size <<std::endl;
-    std::cout << "dramsim3 dram size: " << dram_size <<std::endl;
+    // std::cout << "dramsim3 dram size: " << p.dram_size <<std::endl;
+    // std::cout << "dramsim3 dram size: " << dram_size <<std::endl;
 }
 
 void
@@ -157,17 +157,11 @@ DRAMsim3::tick()
     schedule(tickEvent,
         curTick() + wrapper.clockPeriod() * sim_clock::as_int::ns);
 }
-
+//没有isdram和iscache的包进来
 Tick
 DRAMsim3::recvAtomic(PacketPtr pkt)
 {
-    if(pkt->isDram){
-        access_remap(pkt);
-    }
-    else{
-        access(pkt);
-    }
-
+    access(pkt);
     // 50 ns is just an arbitrary value at this point
     return pkt->cacheResponding() ? 0 : 50000;
 }
@@ -175,6 +169,7 @@ DRAMsim3::recvAtomic(PacketPtr pkt)
 void
 DRAMsim3::recvFunctional(PacketPtr pkt)
 {
+    // DPRINTF(DRAMsim3, "recv DRAMsim3::recvFunctional \n");
     pkt->pushLabel(name());
 
     functionalAccess(pkt);
@@ -185,10 +180,11 @@ DRAMsim3::recvFunctional(PacketPtr pkt)
 
     pkt->popLabel();
 }
-
+//by crc 240520
 bool
 DRAMsim3::recvTimingReq(PacketPtr pkt)
 {
+    //assert(pkt->getAddr()==pkt->remapaddr);
     // if a cache is responding, sink the packet without further action
     if (pkt->cacheResponding()) {
         pendingDelete.reset(pkt);
@@ -203,13 +199,18 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
 
     // if we cannot accept we need to send a retry once progress can
     // be made
+   
     bool can_accept = nbrOutstanding() < wrapper.queueSize();
-
     // keep track of the transaction
-    if (pkt->isRead()) {
+    if (pkt->isRead()) {//读包
         if (can_accept) {
+            //如果被重映射过
+            
             outstandingReads[pkt->getAddr()].push(pkt);
-
+            // if(pkt->isDram || pkt->isCache)
+            //     outstandingReads[pkt->remapaddr].push(pkt);
+            // else
+            //     outstandingReads[pkt->getAddr()].push(pkt);
             // we count a transaction as outstanding until it has left the
             // queue in the controller, and the response has been sent
             // back, note that this will differ for reads and writes
@@ -218,7 +219,10 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
     } else if (pkt->isWrite()) {
         if (can_accept) {
             outstandingWrites[pkt->getAddr()].push(pkt);
-
+            // if(pkt->isDram || pkt->isCache)
+            //     outstandingReads[pkt->remapaddr].push(pkt);
+            // else
+            //     outstandingReads[pkt->getAddr()].push(pkt);
             ++nbrOutstandingWrites;
 
             // perform the access for writes
@@ -233,14 +237,24 @@ DRAMsim3::recvTimingReq(PacketPtr pkt)
     if (can_accept) {
         // we should never have a situation when we think there is space,
         // and there isn't
-        assert(wrapper.canAccept(pkt->getAddr(), pkt->isWrite()));
+        // if(pkt->isDram||pkt->isCache){
+        //     assert(wrapper.canAccept(pkt->remapaddr, pkt->isWrite()));
 
-        DPRINTF(DRAMsim3, "Enqueueing address %lld\n", pkt->getAddr());
+        //     DPRINTF(DRAMsim3, "Enqueueing address %lld\n", pkt->getAddr());
+            
+        //     wrapper.enqueue(pkt->remapaddr, pkt->isWrite());
+        // }else{
+            assert(wrapper.canAccept(pkt->getAddr(), pkt->isWrite()));
+
+            DPRINTF(DRAMsim3, "Enqueueing address %#x\n", pkt->getAddr());
+            
+            wrapper.enqueue(pkt->getAddr(), pkt->isWrite());
+        // }
 
         // @todo what about the granularity here, implicit assumption that
         // a transaction matches the burst size of the memory (which we
         // cannot determine without parsing the ini file ourselves)
-        wrapper.enqueue(pkt->getAddr(), pkt->isWrite());
+       
 
         return true;
     } else {
@@ -258,11 +272,11 @@ DRAMsim3::recvRespRetry()
     retryResp = false;
     sendResponse();
 }
-
+//by crc 240520
 void
 DRAMsim3::accessAndRespond(PacketPtr pkt)
 {
-    DPRINTF(DRAMsim3, "Access for address %lld\n", pkt->getAddr());
+    DPRINTF(DRAMsim3, "Access for address %#x\n", pkt->getAddr());
 
     bool needsResponse = pkt->needsResponse();
 
@@ -280,7 +294,7 @@ DRAMsim3::accessAndRespond(PacketPtr pkt)
         // Reset the timings of the packet
         pkt->headerDelay = pkt->payloadDelay = 0;
 
-        DPRINTF(DRAMsim3, "Queuing response for address %lld\n",
+        DPRINTF(DRAMsim3, "Queuing response for address %#x\n",
                 pkt->getAddr());
 
         // queue it to be sent back
@@ -299,7 +313,7 @@ DRAMsim3::accessAndRespond(PacketPtr pkt)
 void DRAMsim3::readComplete(unsigned id, uint64_t addr)
 {
 
-    DPRINTF(DRAMsim3, "Read to address %lld complete\n", addr);
+    DPRINTF(DRAMsim3, "Read to address %#x complete\n", addr);
 
     // get the outstanding reads for the address in question
     auto p = outstandingReads.find(addr);
@@ -325,7 +339,7 @@ void DRAMsim3::readComplete(unsigned id, uint64_t addr)
 void DRAMsim3::writeComplete(unsigned id, uint64_t addr)
 {
 
-    DPRINTF(DRAMsim3, "Write to address %lld complete\n", addr);
+    DPRINTF(DRAMsim3, "Write to address %#x complete\n", addr);
 
     // get the outstanding reads for the address in question
     auto p = outstandingWrites.find(addr);

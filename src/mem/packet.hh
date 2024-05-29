@@ -297,27 +297,25 @@ class Packet : public Printable, public Extensible<Packet>
     typedef uint32_t FlagsType;
     typedef gem5::Flags<FlagsType> Flags;
     // add by jbyao 2021.6.13
+    //by crc 240520
     enum PortType {
         MemBus,
         RemappingTable,
-        MigrationManager,
-        AccessCounter,
+        // MigrationManager,
+        // AccessCounter,
         Dispatcher,
         PhysicalDram,
         PhysicalHbm,
         PhysicalNvm,
-        SimpleDispatcher
+        SimpleDispatcher,
+        PageSwaper,
+        WearLevelControl
     };
-    // add by hjy 2021.1.12
+    //by crc 240522
     enum PacketType {
         normal,
-        flatNVMtoDRAM_hot,
-        flatNVMtoDRAM_first,
-        flatNVMtoDRAM_second,
-        cacheNVMtoDRAM_free,
-        cacheNVMtoDRAM_clean,
-        cacheNVMtoDRAM_dirty,
-                                                                                                                       
+        AccessRt,
+        PageSwap                                                                                                    
     };
     PortType reqport = MemBus;
     PortType respport = PhysicalDram;
@@ -328,20 +326,22 @@ class Packet : public Printable, public Extensible<Packet>
     // Addr coldaddr = 0;
     // add by hjy 2021.7.9
     Addr remapaddr = 0;//进行过映射后的addr，默认情况下与Addr相同
-    bool hasremap = false;//标记该pkt是否进行过dram到hbm的remap
-    bool isDram = false;//标记该pkt是否是dram地址
-    bool isCache = false;//标记是否为cache地址
+    Addr accesspage = 0x7fffffff;//进行过映射后的addr，默认情况下与Addr相同
+    bool hasremap = false;//标记该pkt是否进行过重映射
+    bool isDram = false;//标记是否去dram中读页表项
+    bool isCache = false;//标记是否去cache中读页表项
     bool iswrite = false;
     // bool hasmigrate = false;// 标记是否迁移
+    bool hasswap = false;//标记是否交换过
     uint64_t limit = 0 ;//标记该pkt页面权限
     uint64_t can_read = 0;
     // add by hjy 2022.1.6
-    bool hascache = false;//标记该pkt是否在cache(dram/hbm)阶段命中 
+    // bool hascache = false;//标记该pkt是否在cache(dram/hbm)阶段命中 
     // add by hjy 2022.1.13
     // 迁移时nvm dram hbm的页号
-    uint64_t olddrampage = 0;
-    uint64_t drampage = 0;
-    uint64_t hbmpage = 0;
+
+    uint64_t page_1 = 0;
+    uint64_t page_2 = 0;
     // uint64_t oldnvmpage = 0;
     // uint64_t nvmpage = 0;
 
@@ -862,23 +862,12 @@ class Packet : public Printable, public Extensible<Packet>
      */
     void setAddr(Addr _addr) { assert(flags.isSet(VALID_ADDR)); addr = _addr; }
     
-    // hjy add 6.15
-    // Addr getHotAddr() const {return hotaddr; }
-    // Addr getColdAddr() const {return coldaddr;}
-    // void setHotAddr(Addr _addr){hotaddr = _addr;}
-    // void setColdAddr(Addr _addr){coldaddr = _addr;}
-    // hjy add 2022.1.17
-    // Addr getOldDramPage() const {return olddrampage;}
-    Addr getDramPage() const {return drampage;}
-    Addr getHbmPage() const {return hbmpage;}
-    // Addr getOldNvmPage() const {return oldnvmpage;}
-    // Addr getNvmPage() const {return nvmpage;}
-    // void setOldDramPage(uint64_t _addr) {olddrampage = _addr;}
-    void setDramPage(uint64_t _addr)  {drampage = _addr;}
-    void setHbmPage(uint64_t _addr)  {hbmpage = _addr;}
-    // void setOldNvmPage(uint64_t _addr)  {oldnvmpage = _addr;}
-    // void setNvmPage(uint64_t _addr)  {nvmpage = _addr;}
 
+    Addr getPage_1()const {return page_1;}
+    Addr getPage_2()const {return page_2;}
+
+    void setPage_1(uint64_t _addr)  {page_1 = _addr;}
+    void setPage_2(uint64_t _addr)  {page_2 = _addr;}
     unsigned getSize() const  { assert(flags.isSet(VALID_SIZE)); return size; }
 
     /**
@@ -888,7 +877,7 @@ class Packet : public Printable, public Extensible<Packet>
      */
     AddrRange getAddrRange() const;
     //hjy add 7.9
-    AddrRange getRemapAddrRange() const;
+    // AddrRange getRemapAddrRange() const;
     Addr getOffset(unsigned int blk_size) const
     {
         return getAddr() & Addr(blk_size - 1);
@@ -1006,6 +995,7 @@ class Packet : public Printable, public Extensible<Packet>
      * that, as we can't guarantee that the new packet's lifetime is
      * less than that of the original packet.  In this case the new
      * packet should allocate its own data.
+     * 复制绝大部分字段，除了数据字段，因为不确保哪个包的寿命更长
      */
     Packet(const PacketPtr pkt, bool clear_flags, bool alloc_data)
         :  Extensible<Packet>(*pkt),
@@ -1039,10 +1029,12 @@ class Packet : public Printable, public Extensible<Packet>
         // snoops do not need to carry any data as they only serve to
         // co-ordinate state changes
         if (alloc_data) {
+            
             // even if asked to allocate data, if the original packet
             // holds static data, then the sender will not be doing
             // any memcpy on receiving the response, thus we simply
             // carry the pointer forward
+            /* 如果旧包数据是静态的则会引用， */
             if (pkt->flags.isSet(STATIC_DATA)) {
                 data = pkt->data;
                 flags.set(STATIC_DATA);

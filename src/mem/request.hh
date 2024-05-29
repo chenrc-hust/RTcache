@@ -112,7 +112,7 @@ class Request : public Extensible<Request>
          */
         ARCH_BITS                   = 0x000000FF,
         /** The request was an instruction fetch. */
-        INST_FETCH                  = 0x00000100,
+        INST_FETCH                  = 0x00000100,/* 指令获取  256 */
         /** The virtual address is also the physical address. */
         PHYSICAL                    = 0x00000200,
         /**
@@ -484,6 +484,18 @@ class Request : public Extensible<Request>
      * just physical address, size, flags, and timestamp (to curTick()).
      * These fields are adequate to perform a request.
      */
+    /* 这段代码定义了一个 `Request` 类的构造函数，用于创建物理（例如设备）请求。
+    构造函数初始化物理地址、大小、标志和时间戳（设置为当前时钟周期 `curTick()`）。这些字段足以执行一个请求。
+
+    - `Addr paddr`：物理地址。
+    - `unsigned size`：请求的大小。
+    - `Flags flags`：请求的标志。
+    - `RequestorID id`：请求者的 ID。
+
+    在构造函数体中，我们设置了 `_paddr`、`_size`、`_requestorId` 和 `_time` 字段的值。
+    我们还设置了 `_flags`，并将 `VALID_PADDR` 和 `VALID_SIZE` 标志添加到 `privateFlags` 中。
+    最后，我们创建了一个大小为 `size` 的 `std::vector<bool>`，
+    并将所有元素初始化为 `true`，表示所有字节都是有效的。 */
     Request(Addr paddr, unsigned size, Flags flags, RequestorID id) :
         _paddr(paddr), _size(size), _requestorId(id), _time(curTick())
     {
@@ -799,6 +811,7 @@ class Request : public Extensible<Request>
         assert(hasPaddr() || hasVaddr());
         _flags.set(flags);
     }
+    
 
     void
     clearFlags(Flags flags)

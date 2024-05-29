@@ -297,6 +297,7 @@ class AbstractMemory : public ClockedObject
      * @param addr Address in gem5's address space.
      * @return Pointer to the corresponding memory address of the host.
      */
+    /* 这几个有什么区别没有 */
     inline uint8_t *
     toHostAddr(Addr addr) const
     {
@@ -361,8 +362,7 @@ class AbstractMemory : public ClockedObject
      * @param pkt Packet performing the access
      */
     void access(PacketPtr pkt);
-    // hjy add 7.9
-    void access_remap(PacketPtr pkt);
+
     /**
      * Perform an untimed memory read or write without changing
      * anything but the memory itself. No stats are affected by this

@@ -469,6 +469,7 @@ class ResponsePort : public Port, public AtomicResponseProtocol,
      * Send a retry to the request port that previously attempted a
      * sendTimingReq to this response port and failed.
      */
+    /* 端口尝试发送一个请求但是没有成功，然后在响应接口中定义了方法，可以调用对应请求端口的recvReqRetry函数 */
     void
     sendRetryReq()
     {

@@ -1,8 +1,5 @@
 /**
- * @file
- * RemappingTable.hh
- * Last modify Time:2022.3.3
- * Author:wxx
+
  */
 
 #ifndef __MEM_REMAPPING_TAB_HH__
@@ -13,7 +10,9 @@
 #include "sim/sim_object.hh"
 #include "sim/stats.hh"
 #include "sim/system.hh"
-//#include "mem/accesscounter.hh"
+#include "mem/pageswaper.hh"
+#include "mem/wearlevelcontrol.hh"
+// #include "mem/accesscounter.hh"
 // #include "mem/migrationmanager.hh"
 #include <queue>
 #include <time.h>
@@ -32,18 +31,21 @@ class System;
 namespace memory
 {
 
-//class AccessCounter; 
+// class AccessCounter; 
 //class MigrationManager;
+class WearLevelControl;
+class PageSwaper;
 
 class RemapCache {//缓存中的映射表
 private:
     uint64_t cache_capacity;//映射表缓存容量,,
-    uint64_t set_capacity;//映射表缓存集合大小，8路关联缓存
+    uint64_t set_capacity;//映射表缓存集合大小，8路关联缓存，set数量
     std::vector<std::vector<std::pair<uint64_t,uint64_t> > > remap_cache;
     //tag 标志 cache组号 块内地址 ，8路组相联
 public:
     RemapCache(uint64_t capacity,uint64_t capacity_set) {
-        this->cache_capacity = capacity;
+        this->cache_capacity = capacity;//总大小组数
+        //组内大小
         this->set_capacity = capacity_set;
         remap_cache.resize(this->cache_capacity);
 
@@ -134,46 +136,50 @@ class RemappingTable : public SimObject {
       private:
         RemappingTable& remappingtable;
         bool needRetry;
-        bool blocked;
+        // bool blocked;//rt - dp  rt-ps ps-rt  rt -membus
+        PacketPtr blockedPacket;
       public:
         BusSidePort(const std::string& _name, RemappingTable& _remappingtable);
+        bool blocked() { return (blockedPacket != nullptr); }
         AddrRangeList getAddrRanges() const override;
-        bool sendPacket(PacketPtr pkt);
-        void trySendRetry();
+        void sendPacket(PacketPtr pkt);//向上发送包，
+        void trySendRetry();//尝试要求对应端口重发
       protected:
       //不同的名称代表了不同的模拟方式，实际上只有timingreq用的到
+        Tick recvAtomic(PacketPtr pkt) override;
+        void recvFunctional(PacketPtr pkt) override;
+        bool recvTimingReq(PacketPtr pkt) override;
+        void recvRespRetry() override;//调用trysendretry
+    };
+
+    //这个类是跟pageswaper连接的端口
+    class PsSidePort : public ResponsePort {//发送响应到ps的端口，
+      private:
+        RemappingTable& remappingtable;
+        bool needRetry;
+
+        PacketPtr blockedPacket;
+      public:
+        PsSidePort(const std::string& _name, RemappingTable& _remappingtable);
+        AddrRangeList getAddrRanges() const override;
+        void sendPacket(PacketPtr pkt);
+        bool blocked() { return (blockedPacket != nullptr); }
+        void trySendRetry();
+      protected:
         Tick recvAtomic(PacketPtr pkt) override;
         void recvFunctional(PacketPtr pkt) override;
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
     };
 
-    //这个类是跟mm连接的端口，里面会有一些特殊的处理
-    // class MmSidePort : public ResponsePort {//发送响应的端口，mm暂时不用。
+    // class PsRequestPort : public RequestPort {//发送请求到ps端口，
     //   private:
     //     RemappingTable& remappingtable;
     //     bool needRetry;
     //     bool blocked;
+    //     PacketPtr blockedPacket; //如果自己要造新包，自己就要保存，如果
     //   public:
-    //     MmSidePort(const std::string& _name, RemappingTable& _remappingtable);
-    //     AddrRangeList getAddrRanges() const override;
-    //     bool sendPacket(PacketPtr pkt);
-    //     void trySendRetry();
-    //   protected:
-    //     Tick recvAtomic(PacketPtr pkt) override;
-    //     void recvFunctional(PacketPtr pkt) override;
-    //     bool recvTimingReq(PacketPtr pkt) override;
-    //     void recvRespRetry() override;
-    // };
-
-    // class MmRequestPort : public RequestPort {//发送请求的端口，mm暂时不用。
-    //   private:
-    //     RemappingTable& remappingtable;
-    //     bool needRetry;
-    //     bool blocked;
-    //     PacketPtr blockedPacket; //yhl modify
-    //   public:
-    //     MmRequestPort(const std::string& _name, RemappingTable& _remappingtable);
+    //     PsRequestPort(const std::string& _name, RemappingTable& _remappingtable);
     //     bool sendPacket(PacketPtr pkt);
     //     void trySendRetry();
     //   protected:
@@ -186,22 +192,26 @@ class RemappingTable : public SimObject {
       private:
         RemappingTable& remappingtable;
         bool needRetry;
-        bool blocked;
+        PacketPtr blockedPacket;
+
       public:
         DpSidePort(const std::string& _name, RemappingTable& _remappingtable);
-        bool sendPacket(PacketPtr pkt);
+        bool blocked() { return (blockedPacket != nullptr); }
+        
+        void sendPacket(PacketPtr pkt);
         void trySendRetry();
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
-        void recvReqRetry() override;
+        void recvReqRetry() override;//下层发送消息告知可以重发了
         void recvRangeChange() override;
     };
 
     BusSidePort bus_side_port;
     //by crc 240515
-    //MmSidePort mm_side_port;
-    DpSidePort dp_side_port;
-    //MmRequestPort mm_request_port;
+    PsSidePort ps_side_port;//响应端口
+    DpSidePort dp_side_port;//dp request
+    // PsRequestPort ps_request_port;//发送模拟的访存，访问hbm指令
+    
     //
     AddrRangeList getAddrRanges() const;
     void sendRangeChange();
@@ -209,16 +219,15 @@ class RemappingTable : public SimObject {
     void handleFunctional(PacketPtr pkt);
 
     bool handleBusReq(PacketPtr pkt);//处理bus_side_port的req请求
-    // bool handleMmReq(PacketPtr pkt);//处理mm_side_port的req请求
+    bool handlePsReq(PacketPtr pkt);//处理pageswaper 的req请求
     bool handleDpResponse(PacketPtr pkt);//处理dp_side_port的resp请求
-    // bool handleMmResponse(PacketPtr pkt);//处理mm_request_portderesp请求
-    void handleBusReqRetry();
-    // void handleMmReqRetry();
-    void handleRespRetry();
-    // void handleMmResRetry();
-    bool updateRemap(PacketPtr pkt);//更新rt
+    // bool handlePsResponse(PacketPtr pkt);//处理模拟后发回的回应
+    void handleBusReqRetry();//尝试让membus重新发包
+    void handleRespRetry();//尝试让dp重新发送包 
+    void handlePsReqRetry();//处理
+    void updateRemap(PacketPtr pkt);//更新rt
     void handleBlockedPkt();//处理由于迁移而被阻塞的pkt
-    bool handleblockedqueue(PacketPtr pkt);
+    bool handleblockedqueue(PacketPtr pkt);//实际处理函数
     EventFunctionWrapper event;
     void processEvent();
     Tick adjust_latency;//迁移阈值调整时延
@@ -226,30 +235,16 @@ class RemappingTable : public SimObject {
 
   public:
 
-    bool bus_side_blocked;
-    // bool mm_side_blocked;
-    bool dp_side_blocked;
-    // bool mm_request_blocked;
-    const uint64_t PageSize;
-    const uint64_t MaxRemapSize;//
-    const uint64_t CacheRemapSize;//
-    const uint64_t CacheDramSize;// 用于缓存的DRAM页
-    // uint64_t Cr_nvm;//访问nvm（迁移）次数
-    // uint64_t Cw_nvm;//访问nvm（迁移）次数
-    // uint64_t Cr_dram;//访问dram（迁移）次数
-    // uint64_t Cw_dram;//访问dram（迁移）次数
-    // uint64_t Migrafirst;//统计迁移次数
-    // uint64_t Migrasecond;
-    // uint64_t Migrafree;
-    // uint64_t Migraclean;
-    // uint64_t Migradirty;
-
+    bool bus_side_blocked;//阻止bus往下发包
+    bool ps_side_blocked;//ps发req包
+    bool dp_side_blocked;//控制dp发回的响应包能不能发送给membus，往上发包
+    bool ps_request_blocked;//控制往ps发包
+    const uint64_t PageSize;//页大小
     // const uint64_t MaxNVMPage ;   //yhl modify 220501
-    const uint64_t MaxDRAMPage ;
-    const uint64_t MaxHBMPage ;  //三种内存的最大页号 默认 NVM=8GB DRAM=1GB HBM=128MB
+    const uint64_t MaxDRAMPage ;//dram最大页数
+    const uint64_t MaxHBMPage;
     //只需要DRAM  =4G ，crc  hbm = 256m
-    int use_evict;
-
+    const uint64_t HBMsize;//
     const int blocked_threshold;//阻塞队列的阈值，超过阈值触发全局阻塞
     bool isblockedpkt;//判断现在处理的是否是blocked_pkt队列中的元素
     // uint64_t selectfreepage;//选择出来的空闲dram页
@@ -258,25 +253,23 @@ class RemappingTable : public SimObject {
     
     std::unordered_map<uint64_t,uint64_t> remap_table; //记录映射信息<页号,页号> 
     // std::unordered_map<uint64_t,std::pair<uint64_t,uint64_t>> remap_table;
-    // std::vector<uint64_t>  blocked_pagenums; //需要阻塞的两个页面(存放的是引起block或update的pkt的地址),大小为0的时候不阻塞
+    std::vector<uint64_t>  blocked_pagenums; //需要阻塞的两个页面(存放的是引起block或update的pkt的地址),大小为0的时候不阻塞
     std::queue<PacketPtr> blocked_pkt;//存放flat往下的需要被阻塞的pkt
     //std::vector<uint64_t> hbm_list;//管理空hbm项
-
-    void startup(); //yhl modify
-
+    
+    PacketPtr mempkt;//暂存访问的pkt
+    void startup();
     RemapCache* remapcache;//指向cache中的映射表
     RemapDram* remapdram;//指向dram中映射表
-    // std::queue<int> FreeDramPage;// 记录空闲DRAM页
-    // std::vector<int> CleanDramPage;// 记录干净DRAM页
-    void sendtodram(uint64_t page,PacketPtr pkt); //发送dram读包，模拟延迟
     
-    std::vector<int> DramMap;// 记录每一页DRAM的映射
-   
-   
+    
+    
+    
+    //发送读包，模拟延迟
+    void SendaRead(uint64_t page);
     // ac模块直接调用 wanxx add 03.17
-    std::pair<uint64_t,std::pair<uint64_t,uint64_t>> VictDramCache(); //挑选替换cache替换页面
-    std::pair<uint64_t,uint64_t> VictDramFlat();  //挑选flat替换页面
-    uint64_t getremapaddr(uint64_t key);  //获取映射地址
+    // std::pair<uint64_t,std::pair<uint64_t,uint64_t>> VictDramCache(); //挑选替换cache替换页面
+    // std::pair<uint64_t,uint64_t> VictDramFlat();  //挑选flat替换页面
     // void convert_dirty(uint64_t page); // dram_cache干净页变脏
     uint64_t selectdrampage; //挑选的dram flat页面
 
@@ -286,14 +279,18 @@ class RemappingTable : public SimObject {
   // overhead
     System* system() const { return _system; }
     void system(System *sys) { _system = sys; }
-    // AccessCounter* accesscounter() const { return _ac; }
-    // void accesscounter(AccessCounter *ac) { _ac = ac; }
+    WearLevelControl* wearlevelcontrol() const { return _wc; }
+    void wearlevelcontrol(WearLevelControl *wc) { _wc = wc; }
     // MigrationManager* migrationmanager() const { return _mm; }
     // void migrationmanager(MigrationManager *mm) { _mm = mm; }
+    PageSwaper* pageswaper()const{ return _ps;}
+    void pageswaper(PageSwaper *ps){ _ps = ps;}
   protected:
 
     System *_system;//使用指针可以嵌套对象之间的关系
     //  AccessCounter* _ac;
+    WearLevelControl * _wc;
+    PageSwaper * _ps;
     // MigrationManager* _mm;
     struct MemStats : public statistics::Group {
       MemStats(RemappingTable &_remap);
@@ -315,6 +312,7 @@ class RemappingTable : public SimObject {
     } stats;
     // overhead 
 };
+
 
 } // namespace memory
 } // namespace gem5

@@ -16,96 +16,63 @@ namespace memory
 RemappingTable::RemappingTable(const RemappingTableParams &params)
     : SimObject(params),
       bus_side_port(name() + ".bus_side_port", *this),
-    //   mm_side_port(name() + ".mm_side_port", *this),
+      ps_side_port(name() + ".ps_side_port", *this),//接收ps的响应
       dp_side_port(name() + ".dp_side_port",*this),
+    //   ps_request_port(name() + ".ps_request_port",*this),//
       event([this]{processEvent();}, name()), 
-      adjust_latency(10000000),
-    //   mm_request_port(name() + ".mm_request_port", *this),
+      adjust_latency(1000000),
       bus_side_blocked(false),
-    //   mm_side_blocked(false),
+      ps_side_blocked(false),
       dp_side_blocked(false),
-    //   mm_request_blocked(false),
-      
-    //   Cr_nvm(0),
-    //   Cw_nvm(0),
-    //   Cr_dram(0),
-    //   Cw_dram(0),
-    //   Migrafirst(0),
-    //   Migrasecond(0),
-    //   Migrafree(0),
-    //   Migraclean(0),
-    //   Migradirty(0),
+      ps_request_blocked(false),
       PageSize(4096),
-      MaxRemapSize(262144),// 存储1G的映射
-    //   CacheRemapSize(params.nvm_size/(64*1024)), //重映射表片上缓存大小
-        //缓存是缓存映射表表项，还是页面，
-      CacheRemapSize(params.dram_size/(4*1024)), //重映射表片上缓存大小
-      CacheDramSize(params.hbm_size/(4*1024)), //用于缓存的DRAM页面，1GB
-    //   MaxNVMPage(params.nvm_size/(4*1024)),
-      
-    // HBM-16M  DRAM-64
+      //缓存是缓存映射表表项
       MaxDRAMPage(params.dram_size/(4*1024)), 
-      MaxHBMPage(params.hbm_size/(4*1024)), 
-
-    
-    //   // HBM-128M  DRAM-1G
-    //   MaxDRAMPage(262144),
-    //   MaxHBMPage(32768),
-    //   MaxDRAMPage(4096),   
-    //   MaxHBMPage(1024),
+      MaxHBMPage(params.hbm_size/(4*1024)),
+      HBMsize(params.hbm_size), //hbm
       blocked_threshold(1024),
       isblockedpkt(false),
+      mempkt(nullptr),
       _system(NULL), // overhead
       stats(*this)
       { 
           //缓存中的映射表 //by crc 240516
-          // remapcache = new RemapCache(CacheRemapSize/(16*8),8);
-          remapcache = new RemapCache(CacheDramSize/(16*8),8);
-          //remapdram = new RemapDram(MaxNVMPage+MaxDRAMPage);
-          remapdram = new RemapDram(MaxDRAMPage);
-        //   for(int i = 0; i < CacheDramSize; i++){
-        //     FreeDramPage.push(i+MaxNVMPage+MaxDRAMPage);
-        //   }
-          for(int i = 0; i < CacheDramSize; i++)
-          {
-            DramMap.push_back(-1);
-          }
-        //   _ac = accesscounter();
-        //   _mm = migrationmanager();
-        std::cout << "rt params memory dram size: " << params.dram_size<<std::endl;
-        // std::cout << "ab memory p. dram size: " << p.dram_size<<std::endl;
-        std::cout << "rt params hbm_size size: " << params.hbm_size<<std::endl;
-        // std::cout << "ab memory p. hbm_size size: " << p.hbm_size<<std::endl;
+          remapcache = new RemapCache(HBMsize/(8*8),8);//高速缓存中的映射表 ，8个一组，单个大小为8B
+          remapdram = new RemapDram(MaxDRAMPage);//整个内存对应的映射表
+          _wc = wearlevelcontrol();
+          _ps = pageswaper();
+        std::cout << "rt params memory dram page size: " << MaxDRAMPage<<std::endl;
+        std::cout << "rt params hbm_size pagesize: " << MaxHBMPage<<std::endl;
       }
 
 Port& 
 RemappingTable::getPort(const std::string &if_name, PortID idx) {
     if (if_name == "bus_side_port") {
         return bus_side_port;
-    } /* else if (if_name == "mm_side_port") {
-        return mm_side_port;
-    }  */else if(if_name == "dp_side_port") {
+    } else if (if_name == "ps_side_port") {
+        return ps_side_port;
+    } else if(if_name == "dp_side_port") {
         return dp_side_port;
-    }/* else if(if_name == "mm_request_port"){
-        return mm_request_port;
+    }/* else if(if_name == "ps_request_port"){
+        return ps_request_port;
     } */else {
         return SimObject::getPort(if_name, idx);
     }
 }
 
 AddrRangeList
-RemappingTable::getAddrRanges() const{
+RemappingTable::getAddrRanges() const{//向下
     return dp_side_port.getAddrRanges();
 }
 
 void
-RemappingTable::sendRangeChange() {
+RemappingTable::sendRangeChange() {//向上
     DPRINTF(RemappingTable, "send Range Change...\n");
     bus_side_port.sendRangeChange();
 }
 
 Tick
-RemappingTable::handleAtomic(PacketPtr pkt){
+RemappingTable::handleAtomic(PacketPtr pkt){//
     return dp_side_port.sendAtomic(pkt);
 }
 
@@ -114,12 +81,13 @@ RemappingTable::handleFunctional(PacketPtr pkt){
     return dp_side_port.sendFunctional(pkt);
 }
 
-//处理bus端口发送的req请求
+//
+//处理bus端口发送的req请求,能接收就返回true
 bool 
-RemappingTable::handleBusReq(PacketPtr pkt){ //wanxx
+RemappingTable::handleBusReq(PacketPtr pkt){ //by crc 240520
     //如果全局阻塞，不能接受bus往下传的req
-    if(bus_side_blocked){
-        DPRINTF(RemappingTable, "RemappingTable module Bus req blocked directly for addr %#x\n", pkt->getAddr());
+    if(bus_side_blocked||dp_side_port.blocked()){
+        DPRINTF(RemappingTable, "RemappingTable module Bus req blocked directly for addr %#x  isRead %d\n", pkt->getAddr(),pkt->isRead());
         return false;
     }
     // 统计读包总数
@@ -129,516 +97,255 @@ RemappingTable::handleBusReq(PacketPtr pkt){ //wanxx
     else{
         stats.sumofwritereq[pkt->req->requestorId()]++;
     }
-    pkt->remapaddr =pkt->getAddr();
-    //DPRINTF(RemappingTable, "RemappingTable module access bus req for addr %#x\n", pkt->remapaddr);
-    uint64_t nowpage = (pkt->remapaddr) / PageSize;//固定页面大小为4KB
+    pkt->remapaddr = pkt->getAddr();//获取地址
+    DPRINTF(RemappingTable, "RemappingTable module first access bus req for addr %#x  isRead %d \n", pkt->remapaddr,pkt->isRead());
+    uint64_t nowpage = (pkt->remapaddr) / PageSize;//固定页面大小为4KB,起始偏移
     uint64_t nowoffset = (pkt->remapaddr) % PageSize;//偏移量
-    //1.查看阻塞页面的队列大小是否为2，如果不为2直接下一步，否则说明当前有迁移正在进行，需要判断当前包是否需要访问被阻塞的页面
-    // if(blocked_pagenums.size() == 3 && (nowpage == blocked_pagenums[0] || nowpage == blocked_pagenums[1] || nowpage == blocked_pagenums[2])){
-    //     //如果被阻塞将其加入阻塞队列
-    //     blocked_pkt.push(pkt);
-    //     //阻塞队列大小超过阈值则全局阻塞
-    //     if(blocked_pkt.size() > blocked_threshold){
-    //         bus_side_blocked = true;
-    //         return false;
-    //     }
-    // }
-    // else{
-        //获取映射后地址
-        if(remapcache->haspage(nowpage)){
+    //是否为3
+    // std::cout<<" blocked_pagenums.size() "<<blocked_pagenums.size()<<" blocked_pkt.size() "<<blocked_pkt.size()<<" "<<pkt->isRead()<<" "<<std::hex<<pkt->remapaddr<<std::endl;//和这个无关，因为第一次的磨损均衡都没有结束
+    
+    if(blocked_pagenums.size() == 3 && (nowpage == blocked_pagenums[0] || nowpage == blocked_pagenums[1] || nowpage == blocked_pagenums[2])){//如果当前要访问的地址被阻塞，停止此次访问
+        
+        // std::cout<<blocked_pagenums[0]<<" "<<blocked_pagenums[1]<<" "<<blocked_pagenums[2]<<std::endl;
+        //如果被阻塞将其加入阻塞队列
+        blocked_pkt.push(pkt);
+        //阻塞队列大小超过阈值则全局阻塞
+        DPRINTF(RemappingTable, "RemappingTable bus req has block because swap page %#x\n", pkt->getAddr());
+        if(blocked_pkt.size() > blocked_threshold){
+            bus_side_blocked = true;
+            return false;
+        }
+       
+    }
+    else{//不在交换中
+        /* 第一步获取地址 */
+        
+        uint64_t accesspage;
+        if(remapcache->haspage(nowpage)){//命中，应该有一个模拟命中的包?
             //在缓存中直接获取映射地址
+            //命中时设置为访问hbm
+            accesspage = MaxDRAMPage+rand()%MaxHBMPage;
+            //发送到hbm中，映射表的读取属于关键路径，
+            
             pkt->remapaddr = (remapcache->getremappage(nowpage)) * PageSize + nowoffset;
             stats.numofRemapHit[pkt->req->requestorId()]++;
         }
         else{
-            
-            //_mm->send_read_dram(pkt->remapaddr);
-            //sendtodram(nowpage, pkt);//模拟访问dram映射表延迟
 
+            //_mm->send_read_dram(pkt->remapaddr);
+            accesspage = rand()%MaxDRAMPage;
+            //remapaddr用来模拟映射
             pkt->remapaddr = (remapdram->getremappage(nowpage)) * PageSize + nowoffset;
             remapcache->put(nowpage,(pkt->remapaddr)/PageSize);//放入缓存中
             stats.numofRemapMiss[pkt->req->requestorId()]++;
-            DPRINTF(RemappingTable, "RemappingTable module try to put the addr to remapcache %#x\n", pkt->remapaddr);
-        }
-        //std::cout << "access address: " << pkt->remapaddr << ", access is read: " << pkt->isRead() << std::endl;
-        if(pkt->remapaddr >=0 /* MaxNVMPage * PageSize */){ //by crc 240515
-            pkt->isDram = true;
-        }
-        if(pkt->remapaddr >= (MaxDRAMPage/*  + MaxNVMPage */) * PageSize){
-            pkt->isCache = true;
         }
         //by crc 240516
-        if(pkt->remapaddr != pkt->getAddr()){
-            DPRINTF(RemappingTable, "RemappingTable module error in  pkt->remapaddr %#x  != pkt->getAddr() %#x\n", pkt->remapaddr, pkt->getAddr());
-            // pkt->hasmigrate = true;
+        bus_side_blocked = true;//阻塞上一层，
+        pkt->accesspage = accesspage;
+        mempkt = pkt;
+        if(pkt->remapaddr!=pkt->getAddr())
+            DPRINTF(RemappingTable, "RemappingTable bus req has swaped pkt->getAddr() %#x pkt->remapaddr %#x \n", pkt->getAddr(),pkt->remapaddr);
+        SendaRead(accesspage);//发送模拟包，比如下面正在处理页面交换，
+        //
+    }
+    return true;
+}
+
+/*比如自己造的包，怎么回收*/
+void 
+RemappingTable::SendaRead(uint64_t page){//模拟一个包 ，设置为取指
+    unsigned dataSize = 4;//在这里申请，在response回收
+    if(!dp_side_port.blocked()){//
+        DPRINTF(RemappingTable, "rt simulate in address %#x  to access %#x \n",page,mempkt->getAddr());
+        
+        RequestPtr read_req = std::make_shared<Request>(page*PageSize, dataSize, 256, 0);//256设置为预取指令
+        //智能指针，在后面删除就可以了
+        PacketPtr _read_pkt = Packet::createRead(read_req);/* 智能指针 */
+
+        if(page>=MaxDRAMPage){
+            _read_pkt ->isCache = true;
+            DPRINTF(RemappingTable, "rt simulate to access hbm \n");
+        
         }
-        // if(pkt->hasmigrate){//统计访问迁移后页面的次数
-        //     if(pkt->isDram){
-        //         if(pkt->isRead())
-        //             Cr_dram++;
-        //         else
-        //             Cw_dram++;
-        //     }
-        //     else
-        //         if(pkt->isRead())
-        //             Cr_nvm++;
-        //         else
-        //             Cw_nvm++;
-        // }
-        //2.往下层的dispathcher模块转发req
-        if(!dp_side_port.sendPacket(pkt)){
-            DPRINTF(RemappingTable, "RemappingTable module bus req can't forward for addr %#x\n", pkt->remapaddr);
-            bus_side_blocked = true;
+        /* 设置为AccessRt*/
+        _read_pkt ->pkttype = Packet::PacketType::AccessRt;
+        dp_side_port.sendPacket(_read_pkt);
+    }else{
+         DPRINTF(RemappingTable, "rt simulate fatal %#x \n",page);
+    }
+
+}
+
+//by crc 240515
+//处理Ps端口发送的req请求,To be added and modified,update 请求
+//如果还有未处理的包
+//收到请求后阻塞membus，不再接收
+bool
+RemappingTable::handlePsReq(PacketPtr pkt){ //wanxx
+    if(ps_side_blocked||bus_side_blocked){//控制能否接收ps发送的req包
+        DPRINTF(RemappingTable, "RemappingTable module Ps block req blocked directly for addr %#x\n", pkt->remapaddr);
+        return false;
+    }
+    
+    if(blocked_pagenums.size() < 3){//小于3就是0，现在没有被阻塞的页
+        //还要判断上一次阻塞造成的阻塞队列中的pkt是否全部处理完成，处理完毕后才可接受新的block请求
+        if(blocked_pkt.size()==0){
+            // blocked_pagenums.emplace_back((pkt->getHbmAddr()));
+            // blocked_pagenums.emplace_back((pkt->getDramAddr()));
+            if(pkt->pkttype == Packet::PacketType::PageSwap){
+                DPRINTF(RemappingTable, "RemappingTable module recv  Ps update req first time  for addr %#x addr %#x\n", pkt->getPage_1(),pkt->getPage_2());
+                blocked_pagenums.emplace_back(pkt->getPage_1());
+                blocked_pagenums.emplace_back(pkt->getPage_2());
+                blocked_pagenums.emplace_back(INT64_MAX);
+                /* 这里是不是要安排一个包作为响应 */
+                // pkt->makeResponse();
+                // ps_side_port.sendPacket(pkt);
+                return true;
+            }
+        }
+        else{/* 没有处理完 */
+            DPRINTF(RemappingTable, "last blockedqueue has not been completed fatal error");
+            /* 是不是应该调用一下处理阻塞包的函数 */
             return false;
         }
-        // if(pkt->isWrite() && pkt->isCache)
-        // {
-        //     convert_dirty(pkt->remapaddr);
+    }
+    else{//等于说明当前pkt是page swaper更新完成的标
+        //否则如果当前发送的包与blocked_pagenums队尾的元素一样，说明是update请求，需要更新remap_table
+        DPRINTF(RemappingTable, "RemappingTable module recv  Ps update req for addr %#x addr %#x\n", pkt->getPage_1(),pkt->getPage_2());
+        updateRemap(pkt);//update,更新表
+        //将之前被阻塞的pkt往下发
+        handleBlockedPkt();//重新查表，查表开销要算吗
+        //std::cout<<"handleBlockedPkt success!" << std::endl;
         // }
+    }
     // }
+    DPRINTF(RemappingTable, "RemappingTable::handlePsReq complete\n");
     return true;
 }
-//by crc 240515
-//处理Mm端口发送的req请求,To be added and modified
-// bool
-// RemappingTable::handleMmReq(PacketPtr pkt){ //wanxx
-//     if(mm_side_blocked){
-//         DPRINTF(RemappingTable, "RemappingTable module Mm block req blocked directly for addr %#x\n", pkt->remapaddr);
-//         return false;
-//     }
-//     DPRINTF(RemappingTable, "RemappingTable module access mm req for addr %#x\n", pkt->remapaddr);
-    
-//     if(blocked_pagenums.size() < 3){
-//         //还要判断上一次阻塞造成的阻塞队列中的pkt是否全部处理完成，处理完毕后才可接受新的block请求
-//         if(blocked_pkt.size()==0){
-//             // blocked_pagenums.emplace_back((pkt->getHbmAddr()));
-//             // blocked_pagenums.emplace_back((pkt->getDramAddr()));
-//             if(pkt->pkttype == Packet::PacketType::flatNVMtoDRAM_first){
-//                 blocked_pagenums.emplace_back(pkt->getNvmPage());
-//                 blocked_pagenums.emplace_back(pkt->getDramPage());
-//                 blocked_pagenums.emplace_back(INT64_MAX);
-//             }
-//             else if(pkt->pkttype == Packet::PacketType::flatNVMtoDRAM_second){
-//                 blocked_pagenums.emplace_back(pkt->getNvmPage());
-//                 blocked_pagenums.emplace_back(pkt->getDramPage());
-//                 blocked_pagenums.emplace_back(pkt->getOldNvmPage());
-//             }
-//             else if(pkt->pkttype == Packet::PacketType::cacheNVMtoDRAM_free){
-//                 blocked_pagenums.emplace_back(pkt->getNvmPage());
-//                 blocked_pagenums.emplace_back(pkt->getDramPage());
-//                 blocked_pagenums.emplace_back(INT64_MAX);
-//             }
-//             else if(pkt->pkttype == Packet::PacketType::cacheNVMtoDRAM_clean){
-//                 blocked_pagenums.emplace_back(pkt->getNvmPage());
-//                 blocked_pagenums.emplace_back(pkt->getDramPage());
-//                 blocked_pagenums.emplace_back(pkt->getOldNvmPage());
-//             }
-//             else if(pkt->pkttype == Packet::PacketType::cacheNVMtoDRAM_dirty){
-//                 blocked_pagenums.emplace_back(pkt->getNvmPage());
-//                 blocked_pagenums.emplace_back(pkt->getDramPage());
-//                 blocked_pagenums.emplace_back(pkt->getOldNvmPage());
-//             }
-//         }
-//         else{
-//             DPRINTF(RemappingTable, "last blockedqueue has not been completed");
-//             mm_side_blocked = true;
-//             return false;
-//         }
-//         //std::cout<<"remap_table blocked!" << std::endl;
-//     }
-//     else{
-//         //否则如果当前发送的包与blocked_pagenums队尾的元素一样，说明是update请求，需要更新remap_table
-//         // if(blocked_pagenums.back() == pkt->getDramAddr()){
-//             // std::cout<<"remap_table update!" <<"from:"<<uint64_t(pkt->getHbmAddr() / PageSize) <<"  to:"<<uint64_t(pkt->getDramAddr()/PageSize)<< std::endl;
-//         if(!updateRemap(pkt)){
-//             DPRINTF(RemappingTable, "update remapping table false");
-//             mm_side_blocked = true;
-//             return false;
-//         }
-//         //将之前被阻塞的pkt往下发
-//         handleBlockedPkt();
-//         //std::cout<<"handleBlockedPkt success!" << std::endl;
-//         // }
-//     }
-//     // }
-//     return true;
-// }
-
-//处理Dp端口发送的resp响应
+/* 每次先响应req，处理完毕后响应resp */
+//处理Dp端口发送的resp响应，携带数据转发给membus
+//如果返回的包类型是accessRT，并且地址相同，
+//就发送当前包
 bool
-RemappingTable::handleDpResponse(PacketPtr pkt){
-    if(dp_side_blocked){
-        DPRINTF(RemappingTable, "RemappingTable module Dp resp blocked directly for addr %#x\n", pkt->getAddr());
-        return false;
-    }
-    DPRINTF(RemappingTable, "RemappingTable module access dp resp for addr %#x\n", pkt->getAddr());
-    if(!bus_side_port.sendPacket(pkt)){
-        dp_side_blocked = true;
-        return false;
-    }
-    return true;
-}
-//by crc 240515
-// bool
-// RemappingTable::handleMmResponse(PacketPtr pkt){
-//     if(dp_side_blocked){
-//         DPRINTF(RemappingTable, "RemappingTable module Mm resp blocked directly for addr %#x\n", pkt->getAddr());
-//         return false;
-//     }
-//     DPRINTF(RemappingTable, "RemappingTable module access Mm resp for addr %#x\n", pkt->getAddr());
-//     if(!bus_side_port.sendPacket(pkt)){
-//         dp_side_blocked = true;
-//         return false;
-//     }
-//     return true;
-// }
-
-
-//尝试重新发送bus下发的被阻塞的请求
-void
-RemappingTable::handleBusReqRetry(){
-    assert(bus_side_blocked);
-    // 如果当前处理的不是blocked_pkt中的pkt就需要让bus重发req
-    if(!isblockedpkt){
-        // DPRINTF(RemappingTable, "RemappingTable module Retry Bus request for addr %#x\n", pkt->remapaddr);
+RemappingTable::handleDpResponse(PacketPtr pkt){//成功了，发送AccessRt 包
+    /* 一次处理一个请求  */
+    assert(bus_side_blocked&&!dp_side_port.blocked());
+    DPRINTF(RemappingTable, "RemappingTable module access handleDpResponse in addr %#x PacketType %d\n", pkt->getAddr(),pkt->pkttype);
+    
+    if(mempkt!=nullptr/* &&pkt->getAddr()/PageSize == mempkt->accesspage&&pkt->pkttype == Packet::PacketType::AccessRt */){
+        delete pkt;//删除当前包，
+        
+        dp_side_port.sendPacket(mempkt);//向下发送，实际访问包，如果失败了，重发，
+        if(mempkt->isWrite()){
+            bus_side_blocked = false;//如果下发包是write包直接释放端口
+            mempkt = nullptr;
+            bus_side_port.trySendRetry();
+            return true;
+        }
+        mempkt = nullptr;//
+        
+    }else{/* 向上发送实际上的数据响应包 */
+        DPRINTF(RemappingTable, "RemappingTable module try access dp resp for addr %#x\n", pkt->getAddr());
+        bus_side_port.sendPacket(pkt);//
         bus_side_blocked = false;
+        ps_side_port.trySendRetry();//首先尝试接收更新包
         bus_side_port.trySendRetry();
+        DPRINTF(RemappingTable, "RemappingTable module access dp resp for addr %#x complete \n", pkt->getAddr());
     }
-    else{
-        handleBlockedPkt();
-    }
+    return true;   
 }
 
-//by crc 240515
-// void
-// RemappingTable::handleMmReqRetry(){
-//     // DPRINTF(RemappingTable, "RemappingTable module retry Mm request for addr %#x\n", pkt->remapaddr);
-//     if(mm_side_blocked){
-//         mm_side_blocked = false;
-//         mm_side_port.trySendRetry();
-//     }
-// }
-
-//尝试让dp重新发送包
+//修改重映射表
 void
-RemappingTable::handleRespRetry(){
-    assert(dp_side_blocked);
-    // DPRINTF(RemappingTable, "RemappingTable module retry response for addr %#x\n", pkt->remapaddr);
-    dp_side_blocked = false;
-    dp_side_port.trySendRetry();
+RemappingTable::updateRemap(PacketPtr pkt){
+    // pageswap
+    if(pkt->pkttype == Packet::PacketType::PageSwap){
+    // 需要加载的page1 page2
+        uint64_t page_1 = pkt->getPage_1();
+        uint64_t page_2 = pkt->getPage_2();
+        //修改RT
+        remapcache->update(page_1,page_2);
+        remapcache->update(page_2,page_1);
+        remapdram->update(page_1,page_2);
+        remapdram->update(page_2,page_1);
+        //测试
+        //uint64_t remapdrampage = remapcache->getremappage(nvmpage);
+        // std::cout << "old address: " <<page_1<< ", new address: " << page_2 << std::endl;
+
+    }
+    // overhead
+    blocked_pagenums.clear();
+    stats.numofRemapUpdate[pkt->req->requestorId()]++;
+    // return true;
 }
-
-// void
-// RemappingTable::convert_dirty(uint64_t page){
-//     uint64_t nowpage = page / PageSize;
-//     for (int i = 0; i < CleanDramPage.size(); i++){
-//         if(CleanDramPage[i] == nowpage){
-//             CleanDramPage.erase(CleanDramPage.begin() + i);
-//             break;
-//         }
-//     }
-//     return;
-// }
-
-// wxx 3.3
-// wxx add 3.17 新增nvm->dram迁移
-// bool
-// RemappingTable::updateRemap(PacketPtr pkt){
-
-//     // 1.1 dram_flat页面，第一次迁移
-//     if(pkt->pkttype == Packet::PacketType::flatNVMtoDRAM_first){
-//     // 需要加载的nvm和dram
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t drampage = pkt->getDramPage();
-//         //修改RT
-//         remapcache->update(nvmpage,drampage);
-//         remapcache->update(drampage,nvmpage);
-//         remapdram->update(nvmpage,drampage);
-//         remapdram->update(drampage,nvmpage);
-//         //测试
-//         //uint64_t remapdrampage = remapcache->getremappage(nvmpage);
-//         //std::cout << "old address: " << nvmpage << ", new address: " << remapdrampage << std::endl;
-
-//         //修改热度表
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_dram->del(drampage);
-//         Migrafirst++;
-//     }
-//     // 1.2 dram_flat页面，第二次迁移
-//     else if(pkt->pkttype == Packet::PacketType::flatNVMtoDRAM_second){
-
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t oldnvmpage = pkt->getOldNvmPage();
-//         uint64_t drampage = pkt->getDramPage();
-
-//         remapcache->update(oldnvmpage,oldnvmpage);
-//         remapcache->update(nvmpage,drampage);
-//         remapcache->update(drampage,nvmpage);
-//         remapdram->update(oldnvmpage,oldnvmpage);
-//         remapdram->update(nvmpage,drampage);
-//         remapdram->update(drampage,nvmpage);
-
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_nvm->del(oldnvmpage);
-//         _ac->hctable_dram->del(drampage);
-//         Migrasecond++;
-//     }
-//     // 2.1 dram_cache页面，有空闲页
-//     else if(pkt->pkttype == Packet::PacketType::cacheNVMtoDRAM_free){
-
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t drampage = pkt->getDramPage();
-        
-//         remapcache->update(nvmpage,drampage);
-//         remapdram->update(nvmpage,drampage);
-
-//         DramMap[drampage - MaxNVMPage - MaxDRAMPage] = nvmpage;
-//         CleanDramPage.emplace_back(drampage);
-
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_dram->del(drampage);
-
-//         Migrafree++;
-//     }
-//     // 2.2 dram_cache页面，有干净页
-//     else if(pkt->pkttype == Packet::PacketType::cacheNVMtoDRAM_clean){
-
-//         uint64_t drampage = pkt->getDramPage();
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t oldnvmpage = pkt->getOldNvmPage();
-        
-//         remapcache->update(nvmpage,drampage);
-//         remapcache->update(oldnvmpage,oldnvmpage);
-//         remapdram->update(nvmpage,drampage);
-//         remapdram->update(oldnvmpage,oldnvmpage);
-
-//         DramMap[drampage - MaxNVMPage - MaxDRAMPage] = nvmpage;
-//         CleanDramPage.emplace_back(drampage);
-
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_nvm->del(oldnvmpage);
-//         _ac->hctable_dram->del(drampage);
-
-//         Migraclean++;
-//     }
-//     // 2.3 cache_dram页面，没有干净页和空闲页
-//     else if(pkt->pkttype == Packet:: PacketType::cacheNVMtoDRAM_dirty){
-        
-//         uint64_t drampage = pkt->getDramPage();
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t oldnvmpage = pkt->getOldNvmPage();
-
-//         remapcache->update(nvmpage,drampage);
-//         remapcache->update(oldnvmpage,oldnvmpage);
-//         remapdram->update(nvmpage,drampage);
-//         remapdram->update(oldnvmpage,oldnvmpage);
-
-//         DramMap[drampage - MaxNVMPage -MaxDRAMPage] = nvmpage;
-//         CleanDramPage.emplace_back(drampage);
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_nvm->del(oldnvmpage);
-//         _ac->hctable_dram->del(drampage);
-
-//         Migradirty++;
-//     }
-
-//     else if(pkt->pkttype == Packet::PacketType::flatNVMtoDRAM_hot){
-//     // 需要加载的nvm和dram
-//         uint64_t nvmpage = pkt->getNvmPage();
-//         uint64_t drampage = pkt->getDramPage();
-//         //修改RT
-//         remapcache->update(nvmpage,drampage);
-//         remapcache->update(drampage,nvmpage);
-//         _ac->hctable_nvm->del(nvmpage);
-//         _ac->hctable_dram->del(drampage);
-
-//         Migrafirst++;
-//     }
-
-//     // overhead
-//     blocked_pagenums.clear();
-//     stats.numofRemapUpdate[pkt->req->requestorId()]++;
-//     return true;
-// }
-
+//
 void
 RemappingTable::handleBlockedPkt(){
-    bus_side_blocked = true;
-    isblockedpkt = true;
-    while(!blocked_pkt.empty()){
+    bus_side_blocked = true;//阻塞membus
+    dp_side_blocked = true;//阻塞dp
+    isblockedpkt = true;//处理被阻塞包
+    DPRINTF(RemappingTable, "RemappingTable::handleBlockedPkt blocked_pkt.size %d\n",blocked_pkt.size());
+    while(!blocked_pkt.empty()){//如果阻塞队列非空
         PacketPtr pkt = blocked_pkt.front();
         if(handleblockedqueue(pkt))
             blocked_pkt.pop();
         else
-            return;
+            return;//处理失败
     }
     isblockedpkt = false;
+    dp_side_blocked = false;
     bus_side_blocked = false;
     //阻塞队列处理完成，打开
     //by crc 240515
-    // handleMmReqRetry();
+    DPRINTF(RemappingTable, "RemappingTable::handleBlockedPkt complete\n");
+    ps_side_port.trySendRetry();
+    //by crc 240515  ps重发更新req包    
 }
-//remapaddr和原来的做 区分
+//remapaddr和原来的做 区分，处理因为访问正在更新的地址而阻塞的包，类似于handlebusreq
 bool 
 RemappingTable::handleblockedqueue(PacketPtr pkt){
-     uint64_t nowpage = (pkt->remapaddr) / PageSize;//固定页面大小为4KB
-     uint64_t nowoffset = (pkt->remapaddr) % PageSize;//偏移量
-    //获取映射后地址
-    if(remapcache->haspage(nowpage)){
+    if(mempkt!=nullptr||dp_side_port.blocked())return false;
+    pkt->remapaddr = pkt->getAddr();//获取地址
+    DPRINTF(RemappingTable, "RemappingTable module access page swap blocked bus req for addr %#x\n", pkt->remapaddr);
+    uint64_t nowpage = (pkt->remapaddr) / PageSize;//固定页面大小为4KB,起始偏移
+    uint64_t nowoffset = (pkt->remapaddr) % PageSize;//偏移量
+    //是否为3
+    // std::cout<<blocked_pkt.size()<<" "<<pkt->isRead()<<" "<<std::hex<<pkt->remapaddr<<std::endl;//和这个无关，因为第一次的磨损均衡都没有结束
+    /* 第一步获取地址 */
+    uint64_t accesspage;
+    if(remapcache->haspage(nowpage)){//命中，应该有一个模拟命中的包?
         //在缓存中直接获取映射地址
-        pkt->remapaddr = remapcache->getremappage(nowpage) * PageSize + nowoffset;
+        //命中时设置为访问hbm
+        accesspage = MaxDRAMPage+rand()%MaxHBMPage;
+        //发送到hbm中，映射表的读取属于关键路径，
+        pkt->remapaddr = (remapcache->getremappage(nowpage)) * PageSize + nowoffset;
         stats.numofRemapHit[pkt->req->requestorId()]++;
     }
     else{
-        //如果映射不在缓存中，从DRAM中获取映射并更新缓存
-        //模拟从dram中读数据
-        /* unsigned dataSize = 16;
-        PacketPtr dram_read_pkt;
-        RequestPtr read_dram_req = std::make_shared<Request>(MaxNVMPage*PageSize, dataSize, 256, 0);
-        dram_read_pkt = Packet::createRead(read_dram_req);
-        dram_read_pkt->allocate();
-        dram_read_pkt->isDram = true;//hjy add 3.18
-        if(!dp_side_port.sendPacket(dram_read_pkt)){
-            return false;
-        }
-        else{
-            // delete dram_read_pkt;
-            dram_read_pkt->deleteData();
-        } */
-        //获取映射地址
-        pkt->remapaddr = remapdram->getremappage(nowpage) * PageSize + nowoffset;
-        remapcache->put(nowpage,pkt->remapaddr / PageSize);
+        //_mm->send_read_dram(pkt->remapaddr);
+        accesspage = rand()%MaxDRAMPage;
+        //remapaddr用来模拟映射
+        pkt->remapaddr = (remapdram->getremappage(nowpage)) * PageSize + nowoffset;
+        remapcache->put(nowpage,(pkt->remapaddr)/PageSize);//放入缓存中
         stats.numofRemapMiss[pkt->req->requestorId()]++;
     }
-    //std::cout << "block address: " << pkt->remapaddr << std::endl;
-    if(pkt->remapaddr >=0/*  MaxNVMPage * PageSize */){
-            pkt->isDram = true;
-        }
-    if(pkt->remapaddr >= (MaxDRAMPage /* + MaxNVMPage */) * PageSize){
-            pkt->isCache = true;
-        }
-    if(pkt->remapaddr != pkt->getAddr()){
-        DPRINTF(RemappingTable, "RemappingTable module error in  pkt->remapaddr %#x  != pkt->getAddr() %#x\n", pkt->remapaddr, pkt->getAddr());
-        //pkt->hasmigrate = true;//页面迁移过
-    }
-    //3.往下层的dispathcher模块转发req
-    if(!dp_side_port.sendPacket(pkt)){
-        DPRINTF(RemappingTable, "RemappingTable module blocked_pkt can't forward for addr %#x\n", pkt->getAddr());
-        // bus_side_blocked = true;
-        return false;
-    }
+    //by crc 240516
+    bus_side_blocked = true;//阻塞上一层，
+    pkt->accesspage = accesspage;
+    mempkt = pkt;
+    SendaRead(accesspage);//发送模拟包，比如下面正在处理页面交换，
+    //     
     return true;
 }
-//模拟访存读取数据
-void
-RemappingTable::sendtodram(uint64_t page, PacketPtr pkt){
-    PacketPtr SendtoDram_pkt = new Packet(pkt, false, true);
-    uint64_t drampage = rand() % MaxDRAMPage /* + MaxNVMPage */; 
-    // SendtoDram_pkt->setNvmPage(page);
-    SendtoDram_pkt->setDramPage(drampage);
-    // mm_request_port.sendPacket(SendtoDram_pkt);
-}
-
-uint64_t 
-RemappingTable::getremapaddr(uint64_t key){
-    uint64_t remapaddr = 0;
-    if(remapcache->haspage(key)){//64位 取后48位
-        remapaddr = remapcache->getremappage(key) & 0x0000ffffffffffff;
-    }
-    else{
-        remapaddr = remapdram ->getremappage(key) & 0x0000ffffffffffff;
-        remapcache->put(key,remapaddr);
-    }
-    return remapaddr;
-}
-
-// wxx add 3.3 tlt 9.1
-// std::pair<uint64_t,std::pair<uint64_t,uint64_t>>
-// RemappingTable::VictDramCache(){
-//     // 1.如果DRAM_Cache还有空页
-//     if(FreeDramPage.size()){
-//         selectfreepage = FreeDramPage.front(); 
-//         selectcleanpage = 0;
-//         selectnvmpage =0;
-//         FreeDramPage.pop();
-//     }// 2.如果DRAM_Cache没有空页
-//     else{
-//         if(CleanDramPage.size()){
-//             //有干净页 freepage为0
-//             selectfreepage = 0;
-//             int start = 0;
-//             while(start == 0 || _ac->ishot(selectcleanpage)){
-//                 // srand((unsigned int)time(0));//初始化种子为随机值  yhliu modify 0415
-//                 int random_index = rand() % CleanDramPage.size();
-//                 selectcleanpage = CleanDramPage[random_index];
-//                 selectnvmpage = DramMap[selectcleanpage - MaxNVMPage - MaxDRAMPage];
-//                 start++;
-//                 if(start == CleanDramPage.size()){
-//                     break;
-//                 }
-//             }
-//         }
-//         // pkt->hotaddr = selecthotpage * PageSize;
-//         // pkt->coldaddr = selectcoldpage * PageSize;
-//         else{
-//             //没有干净页freepage为-1
-//             selectfreepage = -1;
-//             int start = 0;
-//             while(start == 0 || _ac->ishot(selectcleanpage)){
-//                 int random_index = rand() % CacheDramSize;
-//                 selectcleanpage = random_index + MaxNVMPage + MaxDRAMPage;
-//                 selectnvmpage = DramMap[random_index];
-//                 start++;
-//                 if(start == CacheDramSize){
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-//     // wxx add 3.17
-//     std::pair<uint64_t,std::pair<uint64_t,uint64_t>> free_clear_nvm;
-//     free_clear_nvm.first = selectfreepage;   //free DRAM页
-//     free_clear_nvm.second.first = selectcleanpage;    //clear DRAM页
-//     free_clear_nvm.second.second = selectnvmpage; //nvm页
-//     return free_clear_nvm;
-//     //pkt的hotaddr和coldaddr分别存放被替换出来的两个页号，下一步随着sendPacket发给MM
-//     // if(pkt->needsResponse())
-//     //     pkt->makeResponse();
-//     // if(mm_side_port.sendPacket(pkt))
-//     //     return true;
-//     // else
-//     //     return false;
-// }
-
-// std::pair<uint64_t,uint64_t>
-// RemappingTable::VictDramFlat(){
-//     //挑选不在热度表中的冷页
-//     int start =0;
-//     while(start == 0 || _ac->ishot(selectdrampage)){
-//         int random_index = rand() % MaxDRAMPage;
-//         selectdrampage = MaxNVMPage + random_index;
-//         selectnvmpage = remapdram->getremappage(selectdrampage);
-//         if(selectdrampage == selectnvmpage){
-//             selectnvmpage = 0;
-//         }
-//         start ++;
-//         if(start == 10000){
-//             break;
-//         }
-//     }
-//     std::pair<uint64_t,uint64_t> dram_nvm;
-//     dram_nvm.first = selectdrampage;
-//     dram_nvm.second = selectnvmpage;
-//     return dram_nvm;
-// }
 
 
 RemappingTable::BusSidePort::BusSidePort(const std::string& _name,
                                      RemappingTable& _remappingtable)
-    : ResponsePort(_name, &_remappingtable),
+    : ResponsePort(_name),
       remappingtable(_remappingtable),
       needRetry(false),
-      blocked(false)
+    //   blocked(false),
+      blockedPacket(nullptr)
       {}
 
 AddrRangeList 
@@ -646,29 +353,35 @@ RemappingTable::BusSidePort::getAddrRanges() const{
     return remappingtable.getAddrRanges();
 }
 
-//通过bus port向上(bus)发送resp packet
-bool
+//通过bus port向上(bus)发送resp packet，然后这里的pkt来源是下面的dp发送的
+void
 RemappingTable::BusSidePort::sendPacket(PacketPtr pkt){
-    panic_if(blocked, "Should never try to send if blocked!");
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
     // If we can't send the packet across the port, store it for later.
     if (!sendTimingResp(pkt)) {
-        blocked = true;
-        return false;
-    } else {
+        DPRINTF(RemappingTable, "RemappingTable module send resp fail to bus for addr %#x\n", pkt->getAddr());
+        blockedPacket = pkt;
+    }else {
         DPRINTF(RemappingTable, "RemappingTable module send to bus for addr %#x\n", pkt->getAddr());
-        return true;
     }
 }
 
-//接受dp传上来的resp的重发
+//接受membus重发resp的请求,不需要管是在block还是正常访问
 void 
 RemappingTable::BusSidePort::recvRespRetry(){
-    assert(blocked);
-    DPRINTF(RemappingTable, "RemappingTable module recv dp resp retry...\n");
-    blocked = false;
-    remappingtable.handleRespRetry();
-}
+    assert(blockedPacket != nullptr);
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+    //尝试重新发送dp respon包,一定是数据包
+    sendPacket(pkt);
 
+    DPRINTF(RemappingTable, "RemappingTable module recv dp resp retry...\n");
+
+    trySendRetry();
+   
+}
+//向dp发送，
 Tick 
 RemappingTable::BusSidePort::recvAtomic(PacketPtr pkt){
     return remappingtable.handleAtomic(pkt);
@@ -679,22 +392,21 @@ RemappingTable::BusSidePort::recvFunctional(PacketPtr pkt){
     return remappingtable.handleFunctional(pkt);
 }
 
-//接受上层bus发送的req请求
+//接受上层bus发送的req请求，函数交给membus调用
 bool 
 RemappingTable::BusSidePort::recvTimingReq(PacketPtr pkt){
    
     if(!remappingtable.handleBusReq(pkt)){
         needRetry = true;
         return false;
-    }
-    else
+    }else
         return true;
 }
 
-//当阻塞被打开后，需要告诉上层bus让它重新开始向下转发新的pkt
+//当阻塞被打开后，需要告诉上层bus让它重新开始向下转发新的pkt 
 void
 RemappingTable::BusSidePort::trySendRetry(){
-    if (needRetry && !blocked) {
+    if (needRetry && blockedPacket == nullptr) {
         // Only send a retry if the port is now completely free
         needRetry = false;
         DPRINTF(RemappingTable, "RemappingTable module sending Bus retry req for %d\n", id);
@@ -702,193 +414,125 @@ RemappingTable::BusSidePort::trySendRetry(){
     }
 }
 
-
-// RemappingTable::MmSidePort::MmSidePort(const std::string& _name,
-//                                      RemappingTable& _remappingtable)
-//     : ResponsePort(_name, &_remappingtable),
-//       remappingtable(_remappingtable),
-//       needRetry(false),
-//       blocked(false)
-//       {}
-
-// AddrRangeList 
-// RemappingTable::MmSidePort::getAddrRanges() const{
-//     return remappingtable.getAddrRanges();
-// }
-
-// bool
-// RemappingTable::MmSidePort::sendPacket(PacketPtr pkt){
-//     // panic_if(blocked, "Should never try to send if blocked!");
-//     if (!sendTimingResp(pkt)) {
-//         blocked = true;
-//         return false;
-//     } else {
-//         return true;
-//     }
-// }
-
-//当阻塞时告诉Mm让它重新发req
-// void
-// RemappingTable::MmSidePort::trySendRetry(){
-//     if (needRetry && !blocked) {
-//         // Only send a retry if the port is now completely free
-//         needRetry = false;
-//         DPRINTF(RemappingTable, "RemappingTable module sending Mm retry req for %d\n", id);
-//         sendRetryReq();
-//     }
-// }
-
-// Tick 
-// RemappingTable::MmSidePort::recvAtomic(PacketPtr pkt){
-//     return remappingtable.handleAtomic(pkt);
-// }
-
-// void 
-// RemappingTable::MmSidePort::recvFunctional(PacketPtr pkt){
-//     return remappingtable.handleFunctional(pkt);
-// }
-
-// bool 
-// RemappingTable::MmSidePort::recvTimingReq(PacketPtr pkt){
-//     if(!remappingtable.handleMmReq(pkt)){
-//         needRetry = true;
-//         return false;
-//     }
-//     return true;
-// }
-
-//hjy modify 7.23
-//这地方还是不对，阻塞的时候不好处理，是不是还是需要多接端口才行
-// void 
-// RemappingTable::MmSidePort::recvRespRetry(){
-//     assert(blocked);
-//     DPRINTF(RemappingTable, "RemappingTable module recv MM resp retry...\n");
-//     blocked = false;
-    
-//     return;
-// }
-
-// RemappingTable::MmRequestPort::MmRequestPort(const std::string& _name, 
-//                                      RemappingTable& _remappingtable)
-//     : RequestPort(_name, &_remappingtable),
-//       remappingtable(_remappingtable),
-//       needRetry(false),
-//       blocked(false),
-//       blockedPacket(nullptr) //yhl modify
-//       {}
-
-// bool
-// RemappingTable::MmRequestPort::sendPacket(PacketPtr pkt){
-//     panic_if(blockedPacket != nullptr, "rt,Should never try to send if blocked!");
-//     // If we can't send the packet across the port, store it for later.
-//     if (!sendTimingReq(pkt)) {
-//         blocked = true;
-//         blockedPacket = pkt;
-//         return false;
-//     } else {
-//         DPRINTF(RemappingTable, "RemappingTable module sending req to mm for addr %#x\n", pkt->remapaddr);
-//         return true;
-//     }
-// }
-
-// void 
-// RemappingTable::MmRequestPort::trySendRetry(){
-//     if (needRetry && !blocked) {
-//         // Only send a retry if the port is now completely free
-//         needRetry = false;
-//         DPRINTF(RemappingTable, "RemappingTable module sending Mm retry resp for %d\n", id);
-//         sendRetryResp();
-//     }
-// }
-
-// // 接受从MM发送的resp
-// bool 
-// RemappingTable::MmRequestPort::recvTimingResp(PacketPtr pkt){
-//     if (!remappingtable.handleMmResponse(pkt)) {
-//         needRetry = true;
-//         return false;
-//     } else {
-//         return true;
-//     }
-// }
-
-// //该函数会告知remappingtable模块可以尝试重新往下转发req了
-// void 
-// RemappingTable::MmRequestPort::recvReqRetry(){
-//     // We should have a blocked packet if this function is called.
-//     // assert(blocked);
-//     // blocked = false;
-
-//     // remappingtable.handleBusReqRetry();
-
-//     // We should have a blocked packet if this function is called.
-//     assert(blockedPacket != nullptr);
-
-//     // Grab the blocked packet.
-//     PacketPtr pkt = blockedPacket;
-//     blockedPacket = nullptr;
-
-//     // Try to resend it. It's possible that it fails again.
-//     sendPacket(pkt);
-//     std::cout << "recvReqRetry" <<std::endl; 
-// }
-
-// void 
-// RemappingTable::MmRequestPort::recvRangeChange(){
-//     remappingtable.sendRangeChange();
-// }
-
-RemappingTable::DpSidePort::DpSidePort(const std::string& _name,
+/* response port */
+RemappingTable::PsSidePort::PsSidePort(const std::string& _name,
                                      RemappingTable& _remappingtable)
-    : RequestPort(_name, &_remappingtable),
+    : ResponsePort(_name),
       remappingtable(_remappingtable),
       needRetry(false),
-      blocked(false)
+      blockedPacket(nullptr)
       {}
 
-//尝试通过dp port 下发数据包
-bool 
-RemappingTable::DpSidePort::sendPacket(PacketPtr pkt){
-    panic_if(blocked, "Should never try to send if blocked!");
-    // If we can't send the packet across the port, store it for later.
-    if (!sendTimingReq(pkt)) {
-        blocked = true;
-        return false;
-    } else {
-        DPRINTF(RemappingTable, "RemappingTable module sending req to dp for addr %#x\n", pkt->remapaddr);
-        return true;
+AddrRangeList 
+RemappingTable::PsSidePort::getAddrRanges() const{
+    return remappingtable.getAddrRanges();
+}
+
+void
+RemappingTable::PsSidePort::sendPacket(PacketPtr pkt){
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+    DPRINTF(RemappingTable, " try RemappingTable::PsSidePort::sendPacket  \n");
+    if (!sendTimingResp(pkt)) {
+
+        blockedPacket = pkt;
+    } 
+}
+//当阻塞时告诉Ps让它重新发request包
+void
+RemappingTable::PsSidePort::trySendRetry(){
+    if (needRetry && blockedPacket == nullptr) {
+        // Only send a retry if the port is now completely free
+        needRetry = false;
+        DPRINTF(RemappingTable, "RemappingTable module sending Ps retry req for %d\n", id);
+        sendRetryReq();//重新发更新包，response，让request重发req
+    }else{
+         DPRINTF(RemappingTable, "RT trySendRetry sending Ps retry req for %d failed because needRetry %d blockedPacket == nullptr %d  \n", id,needRetry,blockedPacket == nullptr);
     }
 }
 
+Tick 
+RemappingTable::PsSidePort::recvAtomic(PacketPtr pkt){
+    return remappingtable.handleAtomic(pkt);
+}
+
 void 
-RemappingTable::DpSidePort::trySendRetry(){
-    if (needRetry && !blocked) {
-        // Only send a retry if the port is now completely free
-        needRetry = false;
-        DPRINTF(RemappingTable, "RemappingTable module sending Dp retry resp for %d\n", id);
-        sendRetryResp();
+RemappingTable::PsSidePort::recvFunctional(PacketPtr pkt){
+    return remappingtable.handleFunctional(pkt);
+}
+
+bool 
+RemappingTable::PsSidePort::recvTimingReq(PacketPtr pkt){
+    if(!remappingtable.handlePsReq(pkt)){//
+        needRetry = true;
+        DPRINTF(RemappingTable, "RemappingTable::PsSidePort::recvTimingReq fail %#x  \n",pkt->getAddr());
+        return false;
+    }
+    DPRINTF(RemappingTable, "RemappingTable::PsSidePort::recvTimingReq complete  \n");
+    return true;
+}
+
+//
+
+//发给pageswaper的response,更新完毕后remapping如何回应
+//把包继续发给dp，然后，修改枚举类型，对于更新类型的包过滤
+void 
+RemappingTable::PsSidePort::recvRespRetry(){
+
+    assert(blockedPacket != nullptr);
+
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+
+    DPRINTF(RemappingTable, "RemappingTable module recv Ps resp retry...\n");
+
+    sendPacket(pkt);
+
+    trySendRetry();
+}
+
+RemappingTable::DpSidePort::DpSidePort(const std::string& _name,
+                                     RemappingTable& _remappingtable)
+    : RequestPort(_name),
+      remappingtable(_remappingtable),
+      needRetry(false),
+      blockedPacket(nullptr)
+      {}
+
+//尝试通过dp port 下发数据包，
+void 
+RemappingTable::DpSidePort::sendPacket(PacketPtr pkt){
+    panic_if(blockedPacket != nullptr, "Should never try to send if blocked!");
+
+    // If we can't send the packet across the port, store it for later.
+    if (!sendTimingReq(pkt)) {//dp先收到
+        blockedPacket = pkt;
+    } else {
+        DPRINTF(RemappingTable, "RemappingTable module sending req to dp for addr %#x\n", pkt->getAddr());
     }
 }
 
 // 接受从下层dispatcher发送的resp
 bool 
 RemappingTable::DpSidePort::recvTimingResp(PacketPtr pkt){
-    if (!remappingtable.handleDpResponse(pkt)) {
-        needRetry = true;
-        return false;
-    } else {
-        return true;
-    }
+    return remappingtable.handleDpResponse(pkt);
 }
 
-//该函数会告知remappingtable模块可以尝试重新往下转发req了
+//该函数会告知remappingtable模块可以尝试重新往下转发req了，由dp调用，在dp处理完包之后，
+//要求rt重发包
+/* 面临问题，要发送是哪个包， */
 void 
 RemappingTable::DpSidePort::recvReqRetry(){
     // We should have a blocked packet if this function is called.
-    assert(blocked);
-    blocked = false;
-
-    remappingtable.handleBusReqRetry();
+    
+    assert(blockedPacket != nullptr);
+    DPRINTF(RemappingTable, "RemappingTable module recvReqRetry  from dp \n");
+    PacketPtr pkt = blockedPacket;
+    blockedPacket = nullptr;
+    
+    sendPacket(pkt);
+    if(remappingtable.isblockedpkt&&remappingtable.mempkt==nullptr){//正在处理阻塞包
+        remappingtable.handleBlockedPkt();
+    }
 }
 
 void 
@@ -959,17 +603,18 @@ RemappingTable::MemStats::regStats()
     }
 }
 
+
 void RemappingTable::startup(){
-    if (use_evict){
-        schedule(event, adjust_latency);
-    }
+    // schedule(event, adjust_latency);
 }
 
 void RemappingTable::processEvent() {
-    DPRINTF(RemappingTable, "EventProcess\n");
-    schedule(event, curTick() + adjust_latency);
-   
+    DPRINTF(RemappingTable, "RemappingTable EventProcess bus_side_blocked  %d "
+    "ps_side_blocked %d  dp_side_blocked %d ps_request_blocked %d  isblockedpkt %d\n",
+        bus_side_blocked,ps_side_blocked,dp_side_blocked,ps_request_blocked,isblockedpkt);
+    // schedule(event, curTick() + adjust_latency);
 }
+
 
 } // namespace memory
 } // namespace gem5
