@@ -1,0 +1,9 @@
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 23.0.0.1
+gem5 compiled Oct 21 2024 11:33:24
+gem5 started Oct 21 2024 11:36:09
+gem5 executing on chen-Super-Server, pid 2589300
+command line: /home/chen/gem5-23.0.0.1/build/X86/gem5.opt --outdir=fast-rtgroup8-w-30000 -re /home/chen/gem5-23.0.0.1/configs/deprecated/example/diy.py -c ./omnetpp_base.x86_64_sse --option=omnetpp.ini --cpu-type X86TimingSimpleCPU --cpu-clock 3GHz --cache-type=0 --wl-type=3 --swap-time=1024 --hbm-size=4kB --pre=0 --fast-forward=30000 -I 200000 --hybird=true --l2cache --l1d_size 16kB --l1i_size 64kB --l2_size 256kB --rt-dt=1 --rt-group=8
+

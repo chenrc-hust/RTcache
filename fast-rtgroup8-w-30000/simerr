@@ -1,0 +1,6 @@
+warn: The `get_runtime_isa` function is deprecated. Please migrate away from using this function.
+warn: The se.py script is deprecated. It will be removed in future releases of  gem5.
+warn: The `get_runtime_isa` function is deprecated. Please migrate away from using this function.
+src/base/loader/image_file_data.cc:110: fatal: fatal condition fd < 0 occurred: Failed to open file ./omnetpp_base.x86_64_sse.
+This error typically occurs when the file path specified is incorrect.
+Memory Usage: 104212 KBytes
