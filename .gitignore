@@ -33,3 +33,4 @@ configs/dram/lowp_sweep.cfg
 .pyenv
 .vscode
 src/learning_gem5/part2/RTcache/life_256G.dat
+src/learning_gem5/part2/RTcache/life_256G.dat
