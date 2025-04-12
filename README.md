@@ -1,5 +1,3 @@
-Here's the English translation of your GitHub repository README file:
-
 ```markdown
 # Simulator Environment and Trace Analysis Tool Integration
 
@@ -27,8 +25,8 @@ sudo apt install -y build-essential git m4 scons zlib1g zlib1g-dev \
 ### 2. Clone and Build GEM5 Simulator
 
 ```bash
-git clone https://github.com/gem5/gem5.git
-cd gem5
+git clone https://github.com/chenrc-hust/RTcache.git  
+cd RTcache
 scons build/X86/gem5.opt -j$(nproc)
 ```
 
@@ -45,8 +43,8 @@ make -j$(nproc)
 ### 4. Build RTCache Analysis Tool
 
 ```bash
-git clone https://github.com/yourusername/rtcache-cpp.git  # Replace with actual repo URL
-cd rtcache-cpp
+git clone https://github.com/chenrc-hust/RTcache.git  
+cd RTcache/rtcache-cpp
 make
 ```
 
@@ -58,7 +56,7 @@ Use the provided DIY configuration script to run simulations:
 
 ```bash
 # From the gem5 directory
-./build/X86/gem5.opt configs/deprecated/example/diy.py [additional parameters]
+./build/X86/gem5.opt configs/deprecated/example/diy.py workload [additional parameters]
 ```
 
 ### Generating Trace Data
@@ -92,31 +90,4 @@ cd rtcache-cpp
 2. Capture program execution traces using trace_generator
 3. Analyze trace data using rtcache-cpp
 
-## FAQ
 
-**Q: Compilation errors when building GEM5**
-A: Ensure all dependencies are installed and try reducing parallel compilation threads: `-j4`
-
-**Q: Trace generator fails to run**
-A: Verify the target program is executable and ensure proper permissions
-
-## Contribution Guidelines
-
-Pull requests are welcome. Please ensure:
-- Code style matches existing codebase
-- Include necessary test cases
-- Update relevant documentation
-
-## License
-
-This project is open source under the [MIT License](LICENSE).
-```
-
-Key translation notes:
-1. Maintained technical terminology (GEM5, trace, cache, etc.)
-2. Kept command syntax and code blocks identical
-3. Adjusted some phrasing for natural English flow while preserving technical accuracy
-4. Maintained the same section structure and Markdown formatting
-5. Translated all instructional text while keeping code/commands unchanged
-
-Would you like me to make any adjustments to the technical terminology or phrasing?
