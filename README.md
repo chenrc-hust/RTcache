@@ -1,4 +1,3 @@
-```markdown
 # Simulator Environment and Trace Analysis Tool Integration
 
 This project integrates the GEM5 simulator environment with a trace analysis toolchain for computer architecture research and cache performance analysis.
